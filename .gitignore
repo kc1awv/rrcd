@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging / builds
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS / editor temp
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Reticulum / local runtime state (keep secrets out of git)
+# (Adjust if you want to commit a sample config separately)
+.rrc/
+*.identity
+
+# Test artifacts
+/tmp/
+
+# Local logs
+*.log
