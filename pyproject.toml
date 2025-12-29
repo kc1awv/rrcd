@@ -21,16 +21,16 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Communications :: Chat",
 ]
-
-[project.urls]
-Homepage = "https://github.com/kc1awv/rrcd"
-Repository = "https://github.com/kc1awv/rrcd"
-Issues = "https://github.com/kc1awv/rrcd/issues"
 dependencies = [
   "cbor2>=5.6.0",
   "rns>=0.8.0",
   "tomlkit>=0.13.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/kc1awv/rrcd"
+Repository = "https://github.com/kc1awv/rrcd"
+Issues = "https://github.com/kc1awv/rrcd/issues"
 
 [project.optional-dependencies]
 dev = [
