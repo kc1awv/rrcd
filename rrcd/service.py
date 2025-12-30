@@ -2360,8 +2360,6 @@ class HubService:
 
             payload = encode(env)
             for other in list(self.rooms.get(r, set())):
-                if other is link:
-                    continue
                 self._queue_payload(outgoing, other, payload)
 
             if t == T_MSG:
