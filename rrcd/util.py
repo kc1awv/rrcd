@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import os
 
-from .constants import NICK_MAX_CHARS
+_DEFAULT_NICK_MAX_CHARS = 32
 
 
 def expand_path(p: str) -> str:
     return os.path.expanduser(os.path.expandvars(p))
 
 
-def normalize_nick(value) -> str | None:
+def normalize_nick(value, *, max_chars: int = _DEFAULT_NICK_MAX_CHARS) -> str | None:
     if not isinstance(value, str):
         return None
 
@@ -17,7 +17,12 @@ def normalize_nick(value) -> str | None:
     if not s:
         return None
 
-    if len(s) > int(NICK_MAX_CHARS):
+    try:
+        limit = int(max_chars)
+    except Exception:
+        limit = int(_DEFAULT_NICK_MAX_CHARS)
+
+    if limit > 0 and len(s) > limit:
         return None
 
     # Keep this conservative: avoid embedded newlines or NUL, which frequently

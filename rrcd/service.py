@@ -29,6 +29,7 @@ from .constants import (
     T_MSG,
     T_NOTICE,
     T_PART,
+    T_PARTED,
     T_PING,
     T_PONG,
     T_WELCOME,
@@ -671,6 +672,7 @@ class HubService:
             f"banned={len(old_banned)}->{len(new_banned)} "
             f"registered_rooms={len(old_registry)}->{len(new_registry)}"
         )
+        lines.append(f"policy: nick_max_chars={new_cfg.nick_max_chars}")
 
         if cfg_changes:
             lines.append("config_changes:")
@@ -1209,7 +1211,8 @@ class HubService:
         lines.append(
             f"limits: rate_limit_msgs_per_minute={self.config.rate_limit_msgs_per_minute} "
             f"max_rooms_per_session={self.config.max_rooms_per_session} "
-            f"max_room_name_len={self.config.max_room_name_len}"
+            f"max_room_name_len={self.config.max_room_name_len} "
+            f"nick_max_chars={self.config.nick_max_chars}"
         )
         lines.append(
             f"features: ping_interval_s={self.config.ping_interval_s} "
@@ -2151,7 +2154,7 @@ class HubService:
 
             if isinstance(body, dict):
                 nick = body.get(B_HELLO_NICK)
-                n = normalize_nick(nick)
+                n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                 if n is not None:
                     sess["nick"] = n
 
@@ -2296,6 +2299,21 @@ class HubService:
                             self._persist_room_state_to_registry(link, r)
                     if st is not None and not st.get("registered"):
                         self._room_state.pop(r, None)
+
+            # Per spec: acknowledge PART with PARTED.
+            parted_body = None
+            if self.config.include_joined_member_list:
+                members: list[bytes] = []
+                for member_link in self.rooms.get(r, set()):
+                    s = self.sessions.get(member_link)
+                    ph = s.get("peer") if s else None
+                    if isinstance(ph, (bytes, bytearray)):
+                        members.append(bytes(ph))
+                parted_body = members
+
+            if self.identity is not None:
+                parted = make_envelope(T_PARTED, src=self.identity.hash, room=r, body=parted_body)
+                self._queue_env(outgoing, link, parted)
             return
 
         if t in (T_MSG, T_NOTICE):
@@ -2352,8 +2370,9 @@ class HubService:
             # Backwards-compatible extension: hub can attach the nickname learned
             # from HELLO so clients can render a human-friendly name.
             nick = sess.get("nick")
-            if isinstance(nick, str) and nick.strip():
-                env[K_NICK] = nick.strip()
+            n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
+            if n is not None:
+                env[K_NICK] = n
             else:
                 # Prevent client-supplied spoofed nicknames.
                 env.pop(K_NICK, None)

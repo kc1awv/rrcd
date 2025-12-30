@@ -26,6 +26,12 @@ class HubRuntimeConfig:
     # Invite timeout for keyed rooms (+k). Invites are removed on join or expiry.
     room_invite_timeout_s: float = 900.0
     include_joined_member_list: bool = False
+
+    # Optional policy controls.
+    # Maximum accepted/stored nickname length (Unicode characters). 0 disables
+    # length limiting.
+    nick_max_chars: int = 32
+
     max_rooms_per_session: int = 32
     max_room_name_len: int = 64
     rate_limit_msgs_per_minute: int = 240

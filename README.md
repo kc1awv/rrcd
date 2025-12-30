@@ -86,8 +86,12 @@ Wire-level extensions (backwards-compatible):
     link. Clients should treat `K_NICK` as optional and fall back to `K_SRC`
     when it is missing.
 
-    Nickname policy (current implementation): trimmed Unicode string, UTF-8
-    encodable on the wire, maximum 32 characters.
+    Nicknames are advisory only; clients should treat them as display hints.
+    The hub may ignore, sanitize, replace, or omit them.
+
+    Current hub sanitation policy: store/emit only trimmed nicknames that are
+    UTF-8 encodable, contain no newlines/NUL, and are at most `nick_max_chars`
+    characters (default: 32).
 
 Configure trusted operators and banned identities in the TOML config:
 

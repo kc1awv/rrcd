@@ -121,6 +121,10 @@ room_invite_timeout_s = 900.0
 # Optional behaviors.
 include_joined_member_list = false
 
+# Nickname policy.
+# Maximum accepted nickname length (Unicode characters). 0 disables length limiting.
+nick_max_chars = 32
+
 # Limits.
 max_rooms_per_session = 32
 max_room_name_len = 64

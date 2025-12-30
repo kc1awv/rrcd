@@ -11,7 +11,6 @@ K_SRC = 4
 K_ROOM = 5
 K_BODY = 6
 K_NICK = 7
-NICK_MAX_CHARS = 32
 
 # Message types
 T_HELLO = 1
@@ -20,6 +19,7 @@ T_WELCOME = 2
 T_JOIN = 10
 T_JOINED = 11
 T_PART = 12
+T_PARTED = 13
 
 T_MSG = 20
 T_NOTICE = 21
