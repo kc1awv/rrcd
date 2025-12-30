@@ -10,6 +10,8 @@ K_TS = 3
 K_SRC = 4
 K_ROOM = 5
 K_BODY = 6
+K_NICK = 7
+NICK_MAX_CHARS = 32
 
 # Message types
 T_HELLO = 1

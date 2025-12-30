@@ -3,7 +3,19 @@ from __future__ import annotations
 import os
 import time
 
-from .constants import K_BODY, K_ID, K_ROOM, K_SRC, K_T, K_TS, K_V, RRC_VERSION
+from .constants import (
+    K_BODY,
+    K_ID,
+    K_NICK,
+    K_ROOM,
+    K_SRC,
+    K_T,
+    K_TS,
+    K_V,
+    NICK_MAX_CHARS,
+    RRC_VERSION,
+)
+from .util import normalize_nick
 
 
 def now_ms() -> int:
@@ -20,6 +32,7 @@ def make_envelope(
     src: bytes,
     room: str | None = None,
     body=None,
+    nick: str | None = None,
     mid: bytes | None = None,
     ts: int | None = None,
 ) -> dict:
@@ -34,6 +47,10 @@ def make_envelope(
         env[K_ROOM] = room
     if body is not None:
         env[K_BODY] = body
+    if nick is not None:
+        n = normalize_nick(nick)
+        if n is not None:
+            env[K_NICK] = n
     return env
 
 
@@ -81,3 +98,22 @@ def validate_envelope(env: dict) -> None:
             raise TypeError("room name must be a string")
         if room == "":
             raise ValueError("room name must not be empty")
+
+    if K_NICK in env:
+        nick = env[K_NICK]
+        if not isinstance(nick, str):
+            raise TypeError("nickname must be a string")
+        if nick.strip() == "":
+            raise ValueError("nickname must not be empty")
+
+        # Require normalized form on the wire.
+        if nick != nick.strip():
+            raise ValueError("nickname must not have leading/trailing whitespace")
+        if len(nick) > int(NICK_MAX_CHARS):
+            raise ValueError("nickname too long")
+        if "\n" in nick or "\r" in nick or "\x00" in nick:
+            raise ValueError("nickname contains control characters")
+        try:
+            nick.encode("utf-8", "strict")
+        except UnicodeError as e:
+            raise ValueError(f"nickname is not valid UTF-8: {e}") from e
