@@ -18,6 +18,7 @@ from .constants import (
     B_WELCOME_GREETING,
     B_WELCOME_HUB,
     K_BODY,
+    K_NICK,
     K_ROOM,
     K_SRC,
     K_T,
@@ -33,7 +34,7 @@ from .constants import (
     T_WELCOME,
 )
 from .envelope import make_envelope, validate_envelope
-from .util import expand_path
+from .util import expand_path, normalize_nick
 
 
 @dataclass
@@ -2150,8 +2151,9 @@ class HubService:
 
             if isinstance(body, dict):
                 nick = body.get(B_HELLO_NICK)
-                if isinstance(nick, str) and nick.strip():
-                    sess["nick"] = nick.strip()
+                n = normalize_nick(nick)
+                if n is not None:
+                    sess["nick"] = n
 
             if self.identity is not None:
                 sess["welcomed"] = True
@@ -2346,6 +2348,15 @@ class HubService:
             if peer_hash is not None:
                 env[K_SRC] = bytes(peer_hash) if isinstance(peer_hash, (bytes, bytearray)) else peer_hash
             env[K_ROOM] = r
+
+            # Backwards-compatible extension: hub can attach the nickname learned
+            # from HELLO so clients can render a human-friendly name.
+            nick = sess.get("nick")
+            if isinstance(nick, str) and nick.strip():
+                env[K_NICK] = nick.strip()
+            else:
+                # Prevent client-supplied spoofed nicknames.
+                env.pop(K_NICK, None)
 
             payload = encode(env)
             for other in list(self.rooms.get(r, set())):

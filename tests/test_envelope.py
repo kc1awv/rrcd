@@ -4,6 +4,7 @@ from rrcd.constants import (
     B_HELLO_NICK,
     K_BODY,
     K_ID,
+    K_NICK,
     K_SRC,
     K_T,
     K_TS,
@@ -17,6 +18,26 @@ from rrcd.envelope import make_envelope, validate_envelope
 def test_validate_accepts_make_envelope() -> None:
     env = make_envelope(T_HELLO, src=b"peer", body={B_HELLO_NICK: "alice"})
     validate_envelope(env)
+
+
+def test_validate_accepts_optional_nick_extension() -> None:
+    env = make_envelope(T_HELLO, src=b"peer", body=None, nick="alice")
+    assert env[K_NICK] == "alice"
+    validate_envelope(env)
+
+
+def test_validate_rejects_nick_too_long() -> None:
+    env = make_envelope(T_HELLO, src=b"peer", body=None)
+    env[K_NICK] = "a" * 33
+    with pytest.raises(ValueError):
+        validate_envelope(env)
+
+
+def test_validate_rejects_nick_with_whitespace() -> None:
+    env = make_envelope(T_HELLO, src=b"peer", body=None)
+    env[K_NICK] = " alice "
+    with pytest.raises(ValueError):
+        validate_envelope(env)
 
 
 def test_validate_rejects_missing_required_key() -> None:
@@ -65,5 +86,10 @@ def test_validate_rejects_wrong_field_types() -> None:
 
     env = make_envelope(T_HELLO, src=b"peer", body=None)
     env[K_TS] = "not-int"
+    with pytest.raises(TypeError):
+        validate_envelope(env)
+
+    env = make_envelope(T_HELLO, src=b"peer", body=None)
+    env[K_NICK] = 123
     with pytest.raises(TypeError):
         validate_envelope(env)

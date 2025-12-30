@@ -74,6 +74,21 @@ use a hub-local convention: if a client sends a `MSG`/`NOTICE` whose body is a
 string beginning with `/`, and the command is recognized, the hub treats it as a
 command and does not forward it.
 
+Wire-level extensions (backwards-compatible):
+
+- **Optional envelope nickname**: the hub may include an additional envelope key
+    `K_NICK = 7` (string) when forwarding `MSG`/`NOTICE`. This is an optional
+    hint associated with `K_SRC` so clients can display a human-friendly
+    nickname instead of only the sender identity hash.
+
+    The hub learns this value from the client's `HELLO` body key
+    `B_HELLO_NICK = 0` and treats it as the authoritative nickname for that
+    link. Clients should treat `K_NICK` as optional and fall back to `K_SRC`
+    when it is missing.
+
+    Nickname policy (current implementation): trimmed Unicode string, UTF-8
+    encodable on the wire, maximum 32 characters.
+
 Configure trusted operators and banned identities in the TOML config:
 
 - `trusted_identities`: list of Reticulum Identity hashes (hex) allowed to run

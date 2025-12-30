@@ -13,3 +13,7 @@ Initial public release.
 - Persistent config + room registry in TOML (`rrcd.toml`, `rooms.toml`)
 - Reduced lock contention by flushing outbound packets outside the shared state lock
 - Added small packaging metadata and README polish
+
+## 0.1.1 - 2025-12-30
+
+- Protocol extension: hub may attach an optional nickname (`K_NICK = 7`) to forwarded `MSG`/`NOTICE` envelopes based on the nickname provided in `HELLO`.
