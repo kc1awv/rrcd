@@ -3,18 +3,7 @@ from __future__ import annotations
 import os
 import time
 
-from .constants import (
-    K_BODY,
-    K_ID,
-    K_NICK,
-    K_ROOM,
-    K_SRC,
-    K_T,
-    K_TS,
-    K_V,
-    NICK_MAX_CHARS,
-    RRC_VERSION,
-)
+from .constants import K_BODY, K_ID, K_NICK, K_ROOM, K_SRC, K_T, K_TS, K_V, RRC_VERSION
 from .util import normalize_nick
 
 
@@ -103,17 +92,5 @@ def validate_envelope(env: dict) -> None:
         nick = env[K_NICK]
         if not isinstance(nick, str):
             raise TypeError("nickname must be a string")
-        if nick.strip() == "":
-            raise ValueError("nickname must not be empty")
-
-        # Require normalized form on the wire.
-        if nick != nick.strip():
-            raise ValueError("nickname must not have leading/trailing whitespace")
-        if len(nick) > int(NICK_MAX_CHARS):
-            raise ValueError("nickname too long")
-        if "\n" in nick or "\r" in nick or "\x00" in nick:
-            raise ValueError("nickname contains control characters")
-        try:
-            nick.encode("utf-8", "strict")
-        except UnicodeError as e:
-            raise ValueError(f"nickname is not valid UTF-8: {e}") from e
+        # Per spec, nicknames are advisory and may be empty or "ridiculous".
+        # Type-check only; implementations may sanitize/ignore for display.

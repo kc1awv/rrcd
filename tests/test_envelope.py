@@ -26,18 +26,14 @@ def test_validate_accepts_optional_nick_extension() -> None:
     validate_envelope(env)
 
 
-def test_validate_rejects_nick_too_long() -> None:
+def test_validate_allows_ridiculous_or_empty_nick() -> None:
     env = make_envelope(T_HELLO, src=b"peer", body=None)
-    env[K_NICK] = "a" * 33
-    with pytest.raises(ValueError):
-        validate_envelope(env)
+    env[K_NICK] = ""
+    validate_envelope(env)
 
-
-def test_validate_rejects_nick_with_whitespace() -> None:
     env = make_envelope(T_HELLO, src=b"peer", body=None)
-    env[K_NICK] = " alice "
-    with pytest.raises(ValueError):
-        validate_envelope(env)
+    env[K_NICK] = "   "
+    validate_envelope(env)
 
 
 def test_validate_rejects_missing_required_key() -> None:
