@@ -218,12 +218,12 @@ class HubService:
         link: RNS.Link,
         *,
         peer_hash: Any,
-        greeting: str | None,
+        motd: str | None,
     ) -> None:
         if self.identity is None:
             return
 
-        g = str(greeting) if greeting else ""
+        g = str(motd) if motd else ""
         body_w: dict[int, Any] = {
             B_WELCOME_HUB: self.config.hub_name,
             B_WELCOME_VER: str(__version__),
@@ -248,10 +248,10 @@ class HubService:
             self._fmt_link_id(link),
         )
 
-        # The hub greeting is delivered as NOTICE after WELCOME.
+        # The hub MOTD (message of the day) is delivered after WELCOME.
         if g:
             self._send_text_smart(
-                link, msg_type=T_NOTICE, text=g, room=None, outgoing=outgoing
+                link, msg_type=T_NOTICE, text=g, room=None, outgoing=outgoing, kind=RES_KIND_MOTD
             )
 
     def _inc(self, key: str, delta: int = 1) -> None:
@@ -654,10 +654,14 @@ class HubService:
         room: str | None = None,
         encoding: str = "utf-8",
         outgoing: list[tuple[RNS.Link, bytes]] | None = None,
+        kind: str | None = None,
     ) -> None:
         """
         Send text message using best method (packet or resource).
         Falls back to chunking if resource transfer fails or is disabled.
+        
+        Args:
+            kind: Resource kind if sent via resource (default: RES_KIND_NOTICE)
         """
         if self.identity is None:
             return
@@ -681,16 +685,18 @@ class HubService:
             and len(text.encode(encoding)) <= self.config.max_resource_bytes
         ):
             text_bytes = text.encode(encoding)
+            resource_kind = kind if kind is not None else RES_KIND_NOTICE
             if self._send_via_resource(
                 link,
-                kind=RES_KIND_NOTICE,
+                kind=resource_kind,
                 payload=text_bytes,
                 room=room,
                 encoding=encoding,
             ):
                 self.log.debug(
-                    "Sent large text via resource link_id=%s chars=%s",
+                    "Sent large text via resource link_id=%s kind=%s chars=%s",
                     self._fmt_link_id(link),
+                    resource_kind,
                     len(text),
                 )
                 return
@@ -2980,13 +2986,13 @@ class HubService:
 
         sess["welcomed"] = True
         # Use the queued path so we can preflight MTU sizing and optionally
-        # follow up with NOTICE chunks (e.g. greeting).
+        # follow up with MOTD via resource or chunks.
         outgoing: list[tuple[RNS.Link, bytes]] = []
         self._queue_welcome(
             outgoing,
             link,
             peer_hash=sess.get("peer"),
-            greeting=self.config.greeting,
+            motd=self.config.greeting,
         )
         for out_link, payload in outgoing:
             self._inc("bytes_out", len(payload))
@@ -3353,7 +3359,7 @@ class HubService:
                 outgoing,
                 link,
                 peer_hash=peer_hash,
-                greeting=self.config.greeting,
+                motd=self.config.greeting,
             )
             return
 
@@ -3395,7 +3401,7 @@ class HubService:
                     outgoing,
                     link,
                     peer_hash=peer_hash,
-                    greeting=self.config.greeting,
+                    motd=self.config.greeting,
                 )
             return
 

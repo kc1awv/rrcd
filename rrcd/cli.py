@@ -121,8 +121,8 @@ announce_period_s = 0.0
 hub_name = "rrc"
 greeting = ""
 
-# Note: The hub greeting is delivered after WELCOME via one or more NOTICE
-# messages. NOTICE payloads are chunked as needed to fit the Link MTU.
+# Note: The hub 'greeting' is the MOTD (message of the day) delivered after WELCOME.
+# If it exceeds the link MTU, it will be sent via RNS.Resource for reliable transfer.
 
 # Operator / moderation
 #
