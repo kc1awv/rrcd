@@ -116,6 +116,115 @@ class HubService:
             return bytes(h).hex()
         return "-"
 
+    def _packet_would_fit(self, link: RNS.Link, payload: bytes) -> bool:
+        try:
+            pkt = RNS.Packet(link, payload)
+            pkt.pack()
+            return True
+        except Exception:
+            return False
+
+    def _queue_notice_chunks(
+        self,
+        outgoing: list[tuple[RNS.Link, bytes]],
+        link: RNS.Link,
+        *,
+        room: str | None,
+        text: str,
+    ) -> None:
+        if self.identity is None:
+            return
+        if not text:
+            return
+
+        # Prefer splitting on lines for readability. If a single line is too
+        # large, further split it by characters using a pack preflight.
+        lines = text.splitlines() or [text]
+        for line in lines:
+            remaining = line
+            if not remaining:
+                continue
+
+            # Start with a generous chunk size; shrink on demand.
+            max_chars = min(len(remaining), 512)
+            while remaining:
+                take = min(len(remaining), max_chars)
+                chunk = remaining[:take]
+                env = make_envelope(
+                    T_NOTICE,
+                    src=self.identity.hash,
+                    room=room,
+                    body=chunk,
+                )
+                payload = encode(env)
+                if self._packet_would_fit(link, payload):
+                    self._queue_payload(outgoing, link, payload)
+                    remaining = remaining[take:]
+                    max_chars = min(max_chars, 512)
+                    continue
+
+                if max_chars <= 1:
+                    # Nothing we can do; avoid an infinite loop.
+                    self.log.warning(
+                        "NOTICE chunk would not fit MTU; dropping remainder (%s chars)",
+                        len(remaining),
+                    )
+                    break
+
+                max_chars = max(1, max_chars // 2)
+
+    def _queue_welcome(
+        self,
+        outgoing: list[tuple[RNS.Link, bytes]],
+        link: RNS.Link,
+        *,
+        peer_hash: Any,
+        greeting: str | None,
+    ) -> None:
+        if self.identity is None:
+            return
+
+        g = str(greeting) if greeting else ""
+
+        body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
+        if g:
+            body_w[B_WELCOME_GREETING] = g
+
+        welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
+        welcome_payload = encode(welcome)
+
+        if self._packet_would_fit(link, welcome_payload):
+            self._queue_payload(outgoing, link, welcome_payload)
+            self.log.debug(
+                "Queued WELCOME (with greeting) peer=%s link_id=%s",
+                self._fmt_hash(peer_hash),
+                self._fmt_link_id(link),
+            )
+            return
+
+        # Fallback: send a minimal WELCOME, then send the greeting as NOTICE
+        # chunks that each fit within the link MTU.
+        body_min: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
+        welcome_min = make_envelope(T_WELCOME, src=self.identity.hash, body=body_min)
+        welcome_min_payload = encode(welcome_min)
+
+        if not self._packet_would_fit(link, welcome_min_payload):
+            self.log.warning(
+                "WELCOME would not fit MTU even without greeting; cannot welcome peer=%s link_id=%s",
+                self._fmt_hash(peer_hash),
+                self._fmt_link_id(link),
+            )
+            return
+
+        self.log.warning(
+            "WELCOME too large for MTU; sending minimal WELCOME + NOTICE chunks peer=%s link_id=%s",
+            self._fmt_hash(peer_hash),
+            self._fmt_link_id(link),
+        )
+        self._queue_payload(outgoing, link, welcome_min_payload)
+        if g:
+            self._queue_notice_chunks(outgoing, link, room=None, text=g)
+
     def _inc(self, key: str, delta: int = 1) -> None:
         try:
             with self._state_lock:
@@ -2087,17 +2196,24 @@ class HubService:
             return
 
         sess["welcomed"] = True
-        body: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-        if self.config.greeting:
-            body[B_WELCOME_GREETING] = self.config.greeting
-
-        welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body)
-        self._send(link, welcome)
-        self.log.debug(
-            "Sent WELCOME peer=%s link_id=%s",
-            self._fmt_hash(sess.get("peer")),
-            self._fmt_link_id(link),
+        # Prefer the queued WELCOME path so we can preflight MTU sizing.
+        outgoing: list[tuple[RNS.Link, bytes]] = []
+        self._queue_welcome(
+            outgoing,
+            link,
+            peer_hash=sess.get("peer"),
+            greeting=self.config.greeting,
         )
+        for out_link, payload in outgoing:
+            try:
+                RNS.Packet(out_link, payload).send()
+            except Exception:
+                self.log.debug(
+                    "Send failed link_id=%s bytes=%s",
+                    self._fmt_link_id(out_link),
+                    len(payload),
+                    exc_info=True,
+                )
 
     def _on_close(self, link: RNS.Link) -> None:
         peer = None
@@ -2135,6 +2251,14 @@ class HubService:
         self._inc("bytes_out", len(payload))
         try:
             RNS.Packet(link, payload).send()
+        except OSError as e:
+            # Common failure mode on low-MTU links: packet too large.
+            self.log.warning(
+                "Send failed link_id=%s bytes=%s err=%s",
+                self._fmt_link_id(link),
+                len(payload),
+                e,
+            )
         except Exception:
             self.log.debug(
                 "Send failed link_id=%s bytes=%s",
@@ -2186,6 +2310,13 @@ class HubService:
         for out_link, payload in outgoing:
             try:
                 RNS.Packet(out_link, payload).send()
+            except OSError as e:
+                self.log.warning(
+                    "Send failed link_id=%s bytes=%s err=%s",
+                    self._fmt_link_id(out_link),
+                    len(payload),
+                    e,
+                )
             except Exception:
                 self.log.debug(
                     "Send failed link_id=%s bytes=%s",
@@ -2290,13 +2421,13 @@ class HubService:
                 self._fmt_link_id(link),
             )
 
-            if self.identity is not None:
-                sess["welcomed"] = True
-                body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-                if self.config.greeting:
-                    body_w[B_WELCOME_GREETING] = self.config.greeting
-                welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
-                self._queue_env(outgoing, link, welcome)
+            sess["welcomed"] = True
+            self._queue_welcome(
+                outgoing,
+                link,
+                peer_hash=peer_hash,
+                greeting=self.config.greeting,
+            )
             return
 
         if t == T_HELLO:
@@ -2322,13 +2453,13 @@ class HubService:
                     self._fmt_link_id(link),
                 )
                 
-                # Send WELCOME
                 sess["welcomed"] = True
-                body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-                if self.config.greeting:
-                    body_w[B_WELCOME_GREETING] = self.config.greeting
-                welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
-                self._queue_env(outgoing, link, welcome)
+                self._queue_welcome(
+                    outgoing,
+                    link,
+                    peer_hash=peer_hash,
+                    greeting=self.config.greeting,
+                )
             return
 
         if t == T_JOIN:

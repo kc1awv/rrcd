@@ -68,6 +68,23 @@ CLI overrides are also available:
 
 If you use `/reload`, logging settings are applied immediately.
 
+### Troubleshooting: connect times out after HELLO
+
+If a client connects, sends `HELLO`, and then times out waiting for `WELCOME`,
+check the hub logs for an error like:
+
+- `Packet size of ... exceeds MTU of ... bytes`
+
+This usually means the hub tried to send a `WELCOME` (or other message) that is
+too large for the current Reticulum link MTU.
+
+Mitigations:
+
+- Keep `greeting` reasonably short if you want it to appear inside `WELCOME`.
+- If `WELCOME` would exceed MTU, `rrcd` automatically sends a minimal `WELCOME`
+    and then delivers the full greeting as one or more `NOTICE` messages sized to
+    fit the link MTU.
+
 ## Compatibility
 
 `rrcd` implements the core RRC protocol as described in the RRC docs.

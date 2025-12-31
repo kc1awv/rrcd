@@ -121,6 +121,11 @@ announce_period_s = 0.0
 hub_name = "rrc"
 greeting = ""
 
+# Note: Some Reticulum links have low MTU. If `greeting` is very long, the hub
+# may be unable to include it inside the initial WELCOME. In that case, rrcd
+# will send a minimal WELCOME and then deliver the greeting afterward via NOTICE
+# messages.
+
 # Operator / moderation
 #
 # trusted_identities: list of Reticulum Identity hashes (hex) allowed to run
