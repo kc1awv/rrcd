@@ -139,6 +139,40 @@ Wire-level extensions (backwards-compatible):
     UTF-8 encodable, contain no newlines/NUL, and are at most `nick_max_chars`
     characters (default: 32).
 
+- **Large payload transfer via RNS.Resource**: For messages that exceed the link
+    MTU (Maximum Data Unit), `rrcd` can automatically use RNS.Resource for
+    reliable large payload transfer instead of manual chunking.
+
+    This is implemented as a two-part protocol:
+    1. Send a small `RESOURCE_ENVELOPE` message (type 50) via normal packet,
+       announcing the incoming resource with metadata (id, kind, size, SHA256).
+    2. Send the actual payload via `RNS.Resource`.
+
+    The receiving side matches the resource to the expectation and validates
+    integrity. Supported resource kinds include:
+    - `notice`: Large NOTICE text messages
+    - `motd`: Message of the day / server greeting
+    - `blob`: Generic binary data
+
+    Configuration (in `rrcd.toml`):
+    ```toml
+    [hub]
+    enable_resource_transfer = true       # default: true
+    max_resource_bytes = 262144           # 256 KiB default
+    max_pending_resource_expectations = 8  # per link
+    resource_expectation_ttl_s = 30.0     # expectation timeout
+    ```
+
+    Safety controls:
+    - Resources are only accepted if they match a recent expectation
+    - Size limits enforced (default 256 KiB)
+    - SHA256 verification for integrity
+    - TTL-based expectation expiry (default 30 seconds)
+    - Per-link expectation limit to prevent memory exhaustion
+
+    Fallback: If resource transfer is disabled or fails, NOTICE messages fall
+    back to the original line-based chunking method.
+
 Configure trusted operators and banned identities in the TOML config:
 
 - `trusted_identities`: list of Reticulum Identity hashes (hex) allowed to run

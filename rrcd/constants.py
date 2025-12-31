@@ -29,6 +29,8 @@ T_PONG = 31
 
 T_ERROR = 40
 
+T_RESOURCE_ENVELOPE = 50
+
 # HELLO body keys
 # Per spec: key assignments are fixed.
 B_HELLO_NAME = 0
@@ -46,3 +48,15 @@ B_WELCOME_CAPS = 2
 
 # Capabilities map keys (values are advisory). Keep these small and numeric.
 CAP_RESOURCE_ENVELOPE = 0
+
+# RESOURCE_ENVELOPE body keys
+B_RES_ID = 0
+B_RES_KIND = 1
+B_RES_SIZE = 2
+B_RES_SHA256 = 3
+B_RES_ENCODING = 4
+
+# Resource kinds (string values)
+RES_KIND_NOTICE = "notice"
+RES_KIND_MOTD = "motd"
+RES_KIND_BLOB = "blob"

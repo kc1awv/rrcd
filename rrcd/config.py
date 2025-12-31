@@ -26,6 +26,10 @@ class HubRuntimeConfig:
     rate_limit_msgs_per_minute: int = 240
     ping_interval_s: float = 0.0
     ping_timeout_s: float = 0.0
+    max_resource_bytes: int = 256 * 1024  # 256 KiB default
+    max_pending_resource_expectations: int = 8
+    resource_expectation_ttl_s: float = 30.0
+    enable_resource_transfer: bool = True
     log_level: str = "INFO"
     log_rns_level: str = "WARNING"
     log_console: bool = True
