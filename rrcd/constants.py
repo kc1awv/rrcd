@@ -30,12 +30,19 @@ T_PONG = 31
 T_ERROR = 40
 
 # HELLO body keys
-B_HELLO_NICK = 0
-B_HELLO_NAME = 1
-B_HELLO_VER = 2
-B_HELLO_CAPS = 3
+# Per spec: key assignments are fixed.
+B_HELLO_NAME = 0
+B_HELLO_VER = 1
+B_HELLO_CAPS = 2
+
+# Legacy / pre-spec implementations may have sent nick in HELLO body.
+# Prefer the envelope-level nickname field (K_NICK=7) going forward.
+B_HELLO_NICK_LEGACY = 64
 
 # WELCOME body keys
 B_WELCOME_HUB = 0
-B_WELCOME_GREETING = 1
+B_WELCOME_VER = 1
 B_WELCOME_CAPS = 2
+
+# Capabilities map keys (values are advisory). Keep these small and numeric.
+CAP_RESOURCE_ENVELOPE = 0

@@ -1,7 +1,7 @@
 import pytest
 
 from rrcd.constants import (
-    B_HELLO_NICK,
+    B_HELLO_NICK_LEGACY,
     K_BODY,
     K_ID,
     K_NICK,
@@ -16,7 +16,7 @@ from rrcd.envelope import make_envelope, validate_envelope
 
 
 def test_validate_accepts_make_envelope() -> None:
-    env = make_envelope(T_HELLO, src=b"peer", body={B_HELLO_NICK: "alice"})
+    env = make_envelope(T_HELLO, src=b"peer", body={B_HELLO_NICK_LEGACY: "alice"})
     validate_envelope(env)
 
 

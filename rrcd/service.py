@@ -14,9 +14,10 @@ from . import __version__
 from .codec import decode, encode
 from .config import HubRuntimeConfig
 from .constants import (
-    B_HELLO_NICK,
-    B_WELCOME_GREETING,
+    B_HELLO_CAPS,
+    B_HELLO_NICK_LEGACY,
     B_WELCOME_HUB,
+    B_WELCOME_VER,
     K_BODY,
     K_NICK,
     K_ROOM,
@@ -100,6 +101,12 @@ class HubService:
             "pongs_out": 0,
             "announces": 0,
         }
+
+    def _extract_caps(self, body: Any) -> dict[int, Any]:
+        if not isinstance(body, dict):
+            return {}
+        caps = body.get(B_HELLO_CAPS)
+        return caps if isinstance(caps, dict) else {}
 
     def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
         if isinstance(h, (bytes, bytearray)):
@@ -185,43 +192,31 @@ class HubService:
             return
 
         g = str(greeting) if greeting else ""
-
-        body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-        if g:
-            body_w[B_WELCOME_GREETING] = g
+        body_w: dict[int, Any] = {
+            B_WELCOME_HUB: self.config.hub_name,
+            B_WELCOME_VER: str(__version__),
+        }
+        # Capabilities are optional; keep WELCOME minimal unless needed.
 
         welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
         welcome_payload = encode(welcome)
 
-        if self._packet_would_fit(link, welcome_payload):
-            self._queue_payload(outgoing, link, welcome_payload)
-            self.log.debug(
-                "Queued WELCOME (with greeting) peer=%s link_id=%s",
-                self._fmt_hash(peer_hash),
-                self._fmt_link_id(link),
-            )
-            return
-
-        # Fallback: send a minimal WELCOME, then send the greeting as NOTICE
-        # chunks that each fit within the link MTU.
-        body_min: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-        welcome_min = make_envelope(T_WELCOME, src=self.identity.hash, body=body_min)
-        welcome_min_payload = encode(welcome_min)
-
-        if not self._packet_would_fit(link, welcome_min_payload):
+        if not self._packet_would_fit(link, welcome_payload):
             self.log.warning(
-                "WELCOME would not fit MTU even without greeting; cannot welcome peer=%s link_id=%s",
+                "WELCOME would not fit MTU; cannot welcome peer=%s link_id=%s",
                 self._fmt_hash(peer_hash),
                 self._fmt_link_id(link),
             )
             return
 
-        self.log.warning(
-            "WELCOME too large for MTU; sending minimal WELCOME + NOTICE chunks peer=%s link_id=%s",
+        self._queue_payload(outgoing, link, welcome_payload)
+        self.log.debug(
+            "Queued WELCOME peer=%s link_id=%s",
             self._fmt_hash(peer_hash),
             self._fmt_link_id(link),
         )
-        self._queue_payload(outgoing, link, welcome_min_payload)
+
+        # The hub greeting is delivered as NOTICE after WELCOME.
         if g:
             self._queue_notice_chunks(outgoing, link, room=None, text=g)
 
@@ -387,7 +382,9 @@ class HubService:
             data = tomllib.load(f)
         return data if isinstance(data, dict) else {}
 
-    def _apply_config_data(self, base: HubRuntimeConfig, data: dict) -> HubRuntimeConfig:
+    def _apply_config_data(
+        self, base: HubRuntimeConfig, data: dict
+    ) -> HubRuntimeConfig:
         hub = data.get("hub") if isinstance(data, dict) else None
         if isinstance(hub, dict):
             data = {**data, **hub}
@@ -448,7 +445,9 @@ class HubService:
             s = s[:77] + "..."
         return s
 
-    def _diff_config_summary(self, old: HubRuntimeConfig, new: HubRuntimeConfig) -> list[str]:
+    def _diff_config_summary(
+        self, old: HubRuntimeConfig, new: HubRuntimeConfig
+    ) -> list[str]:
         old_d = asdict(old)
         new_d = asdict(new)
         old_d.pop("config_path", None)
@@ -668,12 +667,17 @@ class HubService:
         with self._state_lock:
             recipients = list(self.rooms.get(room, set()))
         for other in recipients:
-            self._emit_notice(outgoing, other, room, f"mode for {room} is now: {mode_txt}")
+            self._emit_notice(
+                outgoing, other, room, f"mode for {room} is now: {mode_txt}"
+            )
 
     def _ensure_worker_threads(self) -> None:
         # Announce loop
         if self._announce_thread is None or not self._announce_thread.is_alive():
-            if self.config.announce_period_s and float(self.config.announce_period_s) > 0:
+            if (
+                self.config.announce_period_s
+                and float(self.config.announce_period_s) > 0
+            ):
                 self._announce_thread = threading.Thread(
                     target=self._announce_loop,
                     name="rrcd-announce",
@@ -684,7 +688,9 @@ class HubService:
         # Ping loop
         if self._ping_thread is None or not self._ping_thread.is_alive():
             if self.config.ping_interval_s and float(self.config.ping_interval_s) > 0:
-                self._ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
+                self._ping_thread = threading.Thread(
+                    target=self._ping_loop, daemon=True
+                )
                 self._ping_thread.start()
 
         # Prune loop
@@ -710,7 +716,9 @@ class HubService:
     ) -> None:
         cfg_path = self._config_path_for_writes()
         if not cfg_path or not os.path.exists(cfg_path):
-            self._emit_notice(outgoing, link, room, "reload failed: config_path not set or missing")
+            self._emit_notice(
+                outgoing, link, room, "reload failed: config_path not set or missing"
+            )
             return
 
         with self._state_lock:
@@ -724,7 +732,9 @@ class HubService:
             data = self._load_toml(cfg_path)
             new_cfg = self._apply_config_data(old_cfg, data)
         except Exception as e:
-            self._emit_notice(outgoing, link, room, f"reload failed: config parse error: {e}")
+            self._emit_notice(
+                outgoing, link, room, f"reload failed: config parse error: {e}"
+            )
             return
 
         # Stage identity lists
@@ -740,7 +750,9 @@ class HubService:
                 if str(h).strip()
             }
         except Exception as e:
-            self._emit_notice(outgoing, link, room, f"reload failed: identity list parse error: {e}")
+            self._emit_notice(
+                outgoing, link, room, f"reload failed: identity list parse error: {e}"
+            )
             return
 
         # Stage room registry parse (strict)
@@ -865,7 +877,9 @@ class HubService:
     def _room_state_get(self, room: str) -> dict[str, Any] | None:
         return self._room_state.get(room)
 
-    def _room_state_ensure(self, room: str, *, founder: bytes | None = None) -> dict[str, Any]:
+    def _room_state_ensure(
+        self, room: str, *, founder: bytes | None = None
+    ) -> dict[str, Any]:
         st = self._room_state.get(room)
         if st is not None:
             if st.get("founder") is None and founder is not None:
@@ -997,7 +1011,9 @@ class HubService:
         st = self._room_state_ensure(room)
         return bool(st.get("moderated", False))
 
-    def _resolve_identity_hash(self, token: str, *, room: str | None = None) -> bytes | None:
+    def _resolve_identity_hash(
+        self, token: str, *, room: str | None = None
+    ) -> bytes | None:
         target_link = self._find_target_link(token, room=room)
         if target_link is not None:
             s = self.sessions.get(target_link)
@@ -1079,15 +1095,25 @@ class HubService:
 
                 ops = st.get("ops")
                 if isinstance(ops, set):
-                    room_tbl["operators"] = sorted(bytes(x).hex() for x in ops if isinstance(x, (bytes, bytearray)))
+                    room_tbl["operators"] = sorted(
+                        bytes(x).hex() for x in ops if isinstance(x, (bytes, bytearray))
+                    )
 
                 voiced = st.get("voiced")
                 if isinstance(voiced, set):
-                    room_tbl["voiced"] = sorted(bytes(x).hex() for x in voiced if isinstance(x, (bytes, bytearray)))
+                    room_tbl["voiced"] = sorted(
+                        bytes(x).hex()
+                        for x in voiced
+                        if isinstance(x, (bytes, bytearray))
+                    )
 
                 bans = st.get("bans")
                 if isinstance(bans, set):
-                    room_tbl["bans"] = sorted(bytes(x).hex() for x in bans if isinstance(x, (bytes, bytearray)))
+                    room_tbl["bans"] = sorted(
+                        bytes(x).hex()
+                        for x in bans
+                        if isinstance(x, (bytes, bytearray))
+                    )
 
                 invited = st.get("invited")
                 if isinstance(invited, dict):
@@ -1218,7 +1244,9 @@ class HubService:
     ) -> None:
         cfg_path = self._config_path_for_writes()
         if not cfg_path:
-            self._emit_notice(outgoing, link, room, "ban updated (not persisted; no config_path)")
+            self._emit_notice(
+                outgoing, link, room, "ban updated (not persisted; no config_path)"
+            )
             return
 
         try:
@@ -1274,7 +1302,9 @@ class HubService:
                     except Exception:
                         pass
         except Exception as e:
-            self._emit_notice(outgoing, link, room, f"ban updated (persist failed: {e})")
+            self._emit_notice(
+                outgoing, link, room, f"ban updated (persist failed: {e})"
+            )
 
     def _is_trusted(self, peer_hash: bytes | None) -> bool:
         if not peer_hash:
@@ -1288,11 +1318,15 @@ class HubService:
         env = make_envelope(T_NOTICE, src=self.identity.hash, room=room, body=text)
         self._send(link, env)
 
-    def _queue_payload(self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, payload: bytes) -> None:
+    def _queue_payload(
+        self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, payload: bytes
+    ) -> None:
         self._inc("bytes_out", len(payload))
         outgoing.append((link, payload))
 
-    def _queue_env(self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, env: dict) -> None:
+    def _queue_env(
+        self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, env: dict
+    ) -> None:
         payload = encode(env)
         self._queue_payload(outgoing, link, payload)
 
@@ -1419,7 +1453,10 @@ class HubService:
 
         # If it's hex-like, treat as an identity hash prefix.
         hex_candidate = t[2:] if t.startswith("0x") else t
-        if all(c in "0123456789abcdef" for c in hex_candidate) and len(hex_candidate) >= 6:
+        if (
+            all(c in "0123456789abcdef" for c in hex_candidate)
+            and len(hex_candidate) >= 6
+        ):
             try:
                 prefix = bytes.fromhex(hex_candidate)
             except Exception:
@@ -1428,7 +1465,9 @@ class HubService:
                 matches: list[RNS.Link] = []
                 for candidate_link, sess in items:
                     ph = sess.get("peer")
-                    if isinstance(ph, (bytes, bytearray)) and bytes(ph).startswith(prefix):
+                    if isinstance(ph, (bytes, bytearray)) and bytes(ph).startswith(
+                        prefix
+                    ):
                         if room is not None and room not in sess.get("rooms", set()):
                             continue
                         matches.append(candidate_link)
@@ -1472,7 +1511,13 @@ class HubService:
         if cmd == "reload":
             if not self._is_server_op(peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=room)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=room,
+                    )
                 return True
             self._reload_config_and_rooms(link, room, outgoing)
             return True
@@ -1481,7 +1526,13 @@ class HubService:
         if cmd == "stats":
             if not self._is_server_op(peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=room)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=room,
+                    )
                 return True
             self._emit_notice(outgoing, link, room, self._format_stats())
             return True
@@ -1511,12 +1562,19 @@ class HubService:
                     members.append(f"{nick} ({ident[:12]})")
                 else:
                     members.append(ident)
-            self._emit_notice(outgoing, link, room, f"members in {r}: " + (", ".join(members) if members else "(none)"))
+            self._emit_notice(
+                outgoing,
+                link,
+                room,
+                f"members in {r}: " + (", ".join(members) if members else "(none)"),
+            )
             return True
 
         if cmd == "kick":
             if len(parts) < 3:
-                self._emit_notice(outgoing, link, room, "usage: /kick <room> <nick|hashprefix>")
+                self._emit_notice(
+                    outgoing, link, room, "usage: /kick <room> <nick|hashprefix>"
+                )
                 return True
             target_room = parts[1]
             target = parts[2]
@@ -1528,12 +1586,20 @@ class HubService:
 
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=r,
+                    )
                 return True
 
             target_link = self._find_target_link(target, room=r)
             if target_link is None:
-                self._emit_notice(outgoing, link, room, "target not found (or ambiguous)")
+                self._emit_notice(
+                    outgoing, link, room, "target not found (or ambiguous)"
+                )
                 return True
 
             tsess = self.sessions.get(target_link)
@@ -1548,32 +1614,61 @@ class HubService:
                     self.rooms.pop(r, None)
 
             if self.identity is not None:
-                self._emit_error(outgoing, target_link, src=self.identity.hash, text=f"kicked from {r}", room=r)
+                self._emit_error(
+                    outgoing,
+                    target_link,
+                    src=self.identity.hash,
+                    text=f"kicked from {r}",
+                    room=r,
+                )
             self._emit_notice(outgoing, link, room, f"kicked {target} from {r}")
             return True
 
         if cmd == "kline":
             if not self._is_server_op(peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=room)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=room,
+                    )
                 return True
 
             if len(parts) < 2:
-                self._emit_notice(outgoing, link, room, "usage: /kline add|del|list [nick|hashprefix|hash]")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    "usage: /kline add|del|list [nick|hashprefix|hash]",
+                )
                 return True
 
             op = parts[1].strip().lower()
             if op == "list":
                 items = sorted(h.hex() for h in self._banned)
-                self._emit_notice(outgoing, link, room, "klines: " + (", ".join(items) if items else "(none)"))
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    "klines: " + (", ".join(items) if items else "(none)"),
+                )
                 return True
 
             if op not in ("add", "del"):
-                self._emit_notice(outgoing, link, room, "usage: /kline add|del|list [nick|hashprefix|hash]")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    "usage: /kline add|del|list [nick|hashprefix|hash]",
+                )
                 return True
 
             if len(parts) < 3:
-                self._emit_notice(outgoing, link, room, f"usage: /kline {op} <nick|hashprefix|hash>")
+                self._emit_notice(
+                    outgoing, link, room, f"usage: /kline {op} <nick|hashprefix|hash>"
+                )
                 return True
 
             target = parts[2]
@@ -1629,8 +1724,14 @@ class HubService:
                 return True
             # Registration rules: requester must be in the room and must be the founder.
             # (No server-op override by design.)
-            if room is None or self._norm_room(room) != r or r not in self.sessions.get(link, {}).get("rooms", set()):
-                self._emit_notice(outgoing, link, room, "must be present in the room to register it")
+            if (
+                room is None
+                or self._norm_room(room) != r
+                or r not in self.sessions.get(link, {}).get("rooms", set())
+            ):
+                self._emit_notice(
+                    outgoing, link, room, "must be present in the room to register it"
+                )
                 return True
 
             st = self._room_state_ensure(r)
@@ -1639,13 +1740,23 @@ class HubService:
             if self._prune_expired_invites(st) and bool(st.get("registered")):
                 self._persist_room_state_to_registry(link, r)
             founder = st.get("founder")
-            if not (isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash):
+            if not (
+                isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash
+            ):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="only the room founder can register", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="only the room founder can register",
+                        room=r,
+                    )
                 return True
 
             if not self._room_registry_path_for_writes():
-                self._emit_notice(outgoing, link, room, "cannot register room: no room_registry_path")
+                self._emit_notice(
+                    outgoing, link, room, "cannot register room: no room_registry_path"
+                )
                 return True
             st["registered"] = True
             # Default modes for registered rooms: +nrt
@@ -1657,13 +1768,21 @@ class HubService:
 
             # Ensure registry mirrors registered rooms.
             self._room_registry[r] = {
-                "founder": bytes(founder) if isinstance(founder, (bytes, bytearray)) else None,
+                "founder": bytes(founder)
+                if isinstance(founder, (bytes, bytearray))
+                else None,
                 "registered": True,
                 "topic": st.get("topic"),
                 "moderated": bool(st.get("moderated", False)),
-                "ops": set(st.get("ops", set())) if isinstance(st.get("ops"), set) else set(),
-                "voiced": set(st.get("voiced", set())) if isinstance(st.get("voiced"), set) else set(),
-                "bans": set(st.get("bans", set())) if isinstance(st.get("bans"), set) else set(),
+                "ops": set(st.get("ops", set()))
+                if isinstance(st.get("ops"), set)
+                else set(),
+                "voiced": set(st.get("voiced", set()))
+                if isinstance(st.get("voiced"), set)
+                else set(),
+                "bans": set(st.get("bans", set()))
+                if isinstance(st.get("bans"), set)
+                else set(),
                 "last_used_ts": st.get("last_used_ts"),
             }
 
@@ -1681,15 +1800,29 @@ class HubService:
                 self._emit_notice(outgoing, link, room, f"bad room: {e}")
                 return True
 
-            if room is None or self._norm_room(room) != r or r not in self.sessions.get(link, {}).get("rooms", set()):
-                self._emit_notice(outgoing, link, room, "must be present in the room to unregister it")
+            if (
+                room is None
+                or self._norm_room(room) != r
+                or r not in self.sessions.get(link, {}).get("rooms", set())
+            ):
+                self._emit_notice(
+                    outgoing, link, room, "must be present in the room to unregister it"
+                )
                 return True
 
             st = self._room_state_ensure(r)
             founder = st.get("founder")
-            if not (isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash):
+            if not (
+                isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash
+            ):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="only the room founder can unregister", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="only the room founder can unregister",
+                        room=r,
+                    )
                 return True
 
             if not st.get("registered"):
@@ -1717,14 +1850,25 @@ class HubService:
             st = self._room_state_ensure(r)
             if len(parts) == 2:
                 topic = st.get("topic")
-                self._emit_notice(outgoing, link, room, f"topic for {r}: {topic if topic else '(none)'}")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    f"topic for {r}: {topic if topic else '(none)'}",
+                )
                 return True
 
             if not self._is_room_op(r, peer_hash):
                 st = self._room_state_ensure(r)
                 if bool(st.get("topic_ops_only", False)):
                     if self.identity is not None:
-                            self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized (+t)", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="not authorized (+t)",
+                            room=r,
+                        )
                     return True
 
             topic = " ".join(parts[2:]).strip()
@@ -1733,12 +1877,19 @@ class HubService:
             self._persist_room_state_to_registry(link, r)
             # Broadcast topic change to current members.
             for other in list(self.rooms.get(r, set())):
-                self._emit_notice(outgoing, other, r, f"topic for {r} is now: {topic if topic else '(cleared)'}")
+                self._emit_notice(
+                    outgoing,
+                    other,
+                    r,
+                    f"topic for {r} is now: {topic if topic else '(cleared)'}",
+                )
             return True
 
         if cmd in ("op", "deop", "voice", "devoice"):
             if len(parts) < 3:
-                self._emit_notice(outgoing, link, room, f"usage: /{cmd} <room> <nick|hashprefix|hash>")
+                self._emit_notice(
+                    outgoing, link, room, f"usage: /{cmd} <room> <nick|hashprefix|hash>"
+                )
                 return True
             try:
                 r = self._norm_room(parts[1])
@@ -1747,15 +1898,25 @@ class HubService:
                 return True
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=r,
+                    )
                 return True
             target_hash = self._resolve_identity_hash(parts[2], room=r)
             if target_hash is None:
-                self._emit_notice(outgoing, link, room, "target not found (or invalid hash)")
+                self._emit_notice(
+                    outgoing, link, room, "target not found (or invalid hash)"
+                )
                 return True
             st = self._room_state_ensure(r)
             founder = st.get("founder")
-            founder_b = bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
+            founder_b = (
+                bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
+            )
 
             if cmd in ("op", "deop"):
                 ops = st.setdefault("ops", set())
@@ -1811,7 +1972,13 @@ class HubService:
                 return True
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=r,
+                    )
                 return True
             flag = parts[2].strip().lower()
             st = self._room_state_ensure(r)
@@ -1847,7 +2014,9 @@ class HubService:
             if flag in ("+k", "-k"):
                 if flag == "+k":
                     if len(parts) < 4:
-                        self._emit_notice(outgoing, link, room, "usage: /mode <room> +k <key>")
+                        self._emit_notice(
+                            outgoing, link, room, "usage: /mode <room> +k <key>"
+                        )
                         return True
                     key = " ".join(parts[3:]).strip()
                     if not key:
@@ -1862,7 +2031,9 @@ class HubService:
                 return True
 
             if flag in ("+r", "-r"):
-                self._emit_notice(outgoing, link, room, "use /register or /unregister to change +r")
+                self._emit_notice(
+                    outgoing, link, room, "use /register or /unregister to change +r"
+                )
                 return True
 
             if flag in ("+o", "-o", "+v", "-v"):
@@ -1877,11 +2048,15 @@ class HubService:
 
                 target_hash = self._resolve_identity_hash(parts[3], room=r)
                 if target_hash is None:
-                    self._emit_notice(outgoing, link, room, "target not found (or invalid hash)")
+                    self._emit_notice(
+                        outgoing, link, room, "target not found (or invalid hash)"
+                    )
                     return True
 
                 founder = st.get("founder")
-                founder_b = bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
+                founder_b = (
+                    bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
+                )
 
                 if flag in ("+o", "-o"):
                     ops = st.setdefault("ops", set())
@@ -1893,14 +2068,21 @@ class HubService:
                         ops.add(target_hash)
                     else:
                         if founder_b is not None and target_hash == founder_b:
-                            self._emit_notice(outgoing, link, room, "cannot deop founder")
+                            self._emit_notice(
+                                outgoing, link, room, "cannot deop founder"
+                            )
                             return True
                         ops.discard(target_hash)
 
                     self._touch_room(r)
                     self._persist_room_state_to_registry(link, r)
                     for other in list(self.rooms.get(r, set())):
-                        self._emit_notice(outgoing, other, r, f"mode for {r} is now: {flag} {target_hash.hex()[:12]}")
+                        self._emit_notice(
+                            outgoing,
+                            other,
+                            r,
+                            f"mode for {r} is now: {flag} {target_hash.hex()[:12]}",
+                        )
                     return True
 
                 voiced = st.setdefault("voiced", set())
@@ -1915,7 +2097,12 @@ class HubService:
                 self._touch_room(r)
                 self._persist_room_state_to_registry(link, r)
                 for other in list(self.rooms.get(r, set())):
-                    self._emit_notice(outgoing, other, r, f"mode for {r} is now: {flag} {target_hash.hex()[:12]}")
+                    self._emit_notice(
+                        outgoing,
+                        other,
+                        r,
+                        f"mode for {r} is now: {flag} {target_hash.hex()[:12]}",
+                    )
                 return True
 
             self._emit_notice(
@@ -1928,7 +2115,12 @@ class HubService:
 
         if cmd == "ban":
             if len(parts) < 3:
-                self._emit_notice(outgoing, link, room, "usage: /ban <room> add|del|list [nick|hashprefix|hash]")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    "usage: /ban <room> add|del|list [nick|hashprefix|hash]",
+                )
                 return True
 
             try:
@@ -1944,26 +2136,45 @@ class HubService:
                 if not isinstance(bans, set) or not bans:
                     self._emit_notice(outgoing, link, room, f"no bans in {r}")
                     return True
-                items = sorted(bytes(x).hex() for x in bans if isinstance(x, (bytes, bytearray)))
-                self._emit_notice(outgoing, link, room, f"bans in {r}: " + ", ".join(items))
+                items = sorted(
+                    bytes(x).hex() for x in bans if isinstance(x, (bytes, bytearray))
+                )
+                self._emit_notice(
+                    outgoing, link, room, f"bans in {r}: " + ", ".join(items)
+                )
                 return True
 
             if op not in ("add", "del"):
-                self._emit_notice(outgoing, link, room, "usage: /ban <room> add|del|list [nick|hashprefix|hash]")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    "usage: /ban <room> add|del|list [nick|hashprefix|hash]",
+                )
                 return True
 
             if len(parts) < 4:
-                self._emit_notice(outgoing, link, room, f"usage: /ban {r} {op} <nick|hashprefix|hash>")
+                self._emit_notice(
+                    outgoing, link, room, f"usage: /ban {r} {op} <nick|hashprefix|hash>"
+                )
                 return True
 
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=r,
+                    )
                 return True
 
             target_hash = self._resolve_identity_hash(parts[3], room=r)
             if target_hash is None:
-                self._emit_notice(outgoing, link, room, "target not found (or invalid hash)")
+                self._emit_notice(
+                    outgoing, link, room, "target not found (or invalid hash)"
+                )
                 return True
 
             st = self._room_state_ensure(r)
@@ -1985,7 +2196,13 @@ class HubService:
                         s.get("rooms", set()).discard(r)
                         self.rooms.get(r, set()).discard(other)
                         if self.identity is not None:
-                            self._emit_error(outgoing, other, src=self.identity.hash, text=f"banned from {r}", room=r)
+                            self._emit_error(
+                                outgoing,
+                                other,
+                                src=self.identity.hash,
+                                text=f"banned from {r}",
+                                room=r,
+                            )
                 if r in self.rooms and not self.rooms[r]:
                     self.rooms.pop(r, None)
                 self._emit_notice(outgoing, link, room, f"ban added in {r}")
@@ -2015,7 +2232,13 @@ class HubService:
 
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="not authorized", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="not authorized",
+                        room=r,
+                    )
                 return True
 
             op = parts[2].strip().lower()
@@ -2046,7 +2269,12 @@ class HubService:
                 if pruned:
                     self._touch_room(r)
                     self._persist_room_state_to_registry(link, r)
-                self._emit_notice(outgoing, link, room, f"invites in {r}: " + (", ".join(items) if items else "(none)"))
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    room,
+                    f"invites in {r}: " + (", ".join(items) if items else "(none)"),
+                )
                 return True
 
             if op not in ("add", "del"):
@@ -2072,14 +2300,26 @@ class HubService:
                 target_link = self._find_target_link(token, room=None)
                 if target_link is None:
                     if self.identity is not None:
-                        self._emit_error(outgoing, link, src=self.identity.hash, text="invite failed: target is offline or ambiguous", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="invite failed: target is offline or ambiguous",
+                            room=r,
+                        )
                     return True
 
                 tsess = self.sessions.get(target_link)
                 ph = tsess.get("peer") if tsess else None
                 if not isinstance(ph, (bytes, bytearray)):
                     if self.identity is not None:
-                        self._emit_error(outgoing, link, src=self.identity.hash, text="invite failed: target not identified", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="invite failed: target not identified",
+                            room=r,
+                        )
                     return True
                 target_hash = bytes(ph)
 
@@ -2096,25 +2336,40 @@ class HubService:
                         f"You have been invited to join {r}. This invite allows joining without the key (+k).",
                     )
                 else:
-                    self._emit_notice(outgoing, target_link, r, f"You have been invited to join {r}.")
+                    self._emit_notice(
+                        outgoing, target_link, r, f"You have been invited to join {r}."
+                    )
 
                 # Persist an expiring invite only when it has semantics: +k bypass and/or +i allow.
                 if is_keyed or is_invite_only:
-                    ttl = float(self.config.room_invite_timeout_s) if self.config.room_invite_timeout_s else 0.0
+                    ttl = (
+                        float(self.config.room_invite_timeout_s)
+                        if self.config.room_invite_timeout_s
+                        else 0.0
+                    )
                     if ttl <= 0:
                         ttl = 900.0
                     exp = float(time.time()) + ttl
                     invited[target_hash] = exp
                     self._touch_room(r)
                     self._persist_room_state_to_registry(link, r)
-                    self._emit_notice(outgoing, link, room, f"invite added in {r} (expires in {int(ttl)}s)")
+                    self._emit_notice(
+                        outgoing,
+                        link,
+                        room,
+                        f"invite added in {r} (expires in {int(ttl)}s)",
+                    )
                 else:
-                    self._emit_notice(outgoing, link, room, f"invite sent to {token} for {r}")
+                    self._emit_notice(
+                        outgoing, link, room, f"invite sent to {token} for {r}"
+                    )
                 return True
 
             target_hash = self._resolve_identity_hash(parts[3], room=None)
             if target_hash is None:
-                self._emit_notice(outgoing, link, room, "target not found (or invalid hash)")
+                self._emit_notice(
+                    outgoing, link, room, "target not found (or invalid hash)"
+                )
                 return True
 
             if target_hash in invited:
@@ -2133,6 +2388,7 @@ class HubService:
                 "rooms": set(),
                 "peer": None,
                 "nick": None,
+                "peer_caps": {},
                 "awaiting_pong": None,
             }
 
@@ -2144,7 +2400,9 @@ class HubService:
         link.set_packet_callback(lambda data, pkt: self._on_packet(link, data))
         link.set_link_closed_callback(lambda closed_link: self._on_close(closed_link))
         link.set_remote_identified_callback(
-            lambda identified_link, ident: self._on_remote_identified(identified_link, ident)
+            lambda identified_link, ident: self._on_remote_identified(
+                identified_link, ident
+            )
         )
 
         self.log.info("Link established link_id=%s", self._fmt_link_id(link))
@@ -2196,7 +2454,8 @@ class HubService:
             return
 
         sess["welcomed"] = True
-        # Prefer the queued WELCOME path so we can preflight MTU sizing.
+        # Use the queued path so we can preflight MTU sizing and optionally
+        # follow up with NOTICE chunks (e.g. greeting).
         outgoing: list[tuple[RNS.Link, bytes]] = []
         self._queue_welcome(
             outgoing,
@@ -2205,8 +2464,16 @@ class HubService:
             greeting=self.config.greeting,
         )
         for out_link, payload in outgoing:
+            self._inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
+            except OSError as e:
+                self.log.warning(
+                    "Send failed link_id=%s bytes=%s err=%s",
+                    self._fmt_link_id(out_link),
+                    len(payload),
+                    e,
+                )
             except Exception:
                 self.log.debug(
                     "Send failed link_id=%s bytes=%s",
@@ -2308,6 +2575,7 @@ class HubService:
             self._on_packet_locked(link, data, outgoing)
 
         for out_link, payload in outgoing:
+            self._inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
             except OSError as e:
@@ -2357,7 +2625,9 @@ class HubService:
                     self._fmt_link_id(link),
                 )
             if self.identity is not None:
-                self._emit_error(outgoing, link, src=self.identity.hash, text="rate limited")
+                self._emit_error(
+                    outgoing, link, src=self.identity.hash, text="rate limited"
+                )
             return
 
         try:
@@ -2373,12 +2643,15 @@ class HubService:
                 e,
             )
             if self.identity is not None:
-                self._emit_error(outgoing, link, src=self.identity.hash, text=f"bad message: {e}")
+                self._emit_error(
+                    outgoing, link, src=self.identity.hash, text=f"bad message: {e}"
+                )
             return
 
         t = env.get(K_T)
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
+        nick = env.get(K_NICK)
 
         if self.log.isEnabledFor(logging.DEBUG):
             body_len = None
@@ -2405,14 +2678,27 @@ class HubService:
         if not sess["welcomed"]:
             if t != T_HELLO:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="send HELLO first")
+                    self._emit_error(
+                        outgoing, link, src=self.identity.hash, text="send HELLO first"
+                    )
                 return
 
-            if isinstance(body, dict):
-                nick = body.get(B_HELLO_NICK)
+            if isinstance(nick, str):
                 n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                 if n is not None:
                     sess["nick"] = n
+
+            if isinstance(body, dict):
+                sess["peer_caps"] = self._extract_caps(body)
+
+                # Back-compat: if a legacy client put nick in HELLO body, accept it.
+                if sess.get("nick") is None:
+                    legacy_nick = body.get(B_HELLO_NICK_LEGACY)
+                    n2 = normalize_nick(
+                        legacy_nick, max_chars=self.config.nick_max_chars
+                    )
+                    if n2 is not None:
+                        sess["nick"] = n2
 
             self.log.info(
                 "HELLO peer=%s nick=%r link_id=%s",
@@ -2438,13 +2724,23 @@ class HubService:
                 sess["welcomed"] = False
                 sess["rooms"] = set()
                 sess["nick"] = None
+                sess["peer_caps"] = {}
 
                 # Process the HELLO message
-                if isinstance(body, dict):
-                    nick = body.get(B_HELLO_NICK)
+                if isinstance(nick, str):
                     n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                     if n is not None:
                         sess["nick"] = n
+
+                if isinstance(body, dict):
+                    sess["peer_caps"] = self._extract_caps(body)
+                    if sess.get("nick") is None:
+                        legacy_nick = body.get(B_HELLO_NICK_LEGACY)
+                        n2 = normalize_nick(
+                            legacy_nick, max_chars=self.config.nick_max_chars
+                        )
+                        if n2 is not None:
+                            sess["nick"] = n2
 
                 self.log.info(
                     "Re-HELLO peer=%s nick=%r link_id=%s",
@@ -2452,7 +2748,7 @@ class HubService:
                     sess.get("nick"),
                     self._fmt_link_id(link),
                 )
-                
+
                 sess["welcomed"] = True
                 self._queue_welcome(
                     outgoing,
@@ -2476,14 +2772,18 @@ class HubService:
 
             if len(sess["rooms"]) >= int(self.config.max_rooms_per_session):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="too many rooms")
+                    self._emit_error(
+                        outgoing, link, src=self.identity.hash, text="too many rooms"
+                    )
                 return
 
             try:
                 r = self._norm_room(room)
             except Exception as e:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text=str(e))
+                    self._emit_error(
+                        outgoing, link, src=self.identity.hash, text=str(e)
+                    )
                 return
 
             # If room is registered, load its state now.
@@ -2497,7 +2797,13 @@ class HubService:
                 is_invited = self._is_invited(st, peer_hash)
                 if not self._is_room_op(r, peer_hash) and not is_invited:
                     if self.identity is not None:
-                        self._emit_error(outgoing, link, src=self.identity.hash, text="invite-only (+i)", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="invite-only (+i)",
+                            room=r,
+                        )
                     return
 
             # +k key/password (JOIN body must be the key string)
@@ -2508,13 +2814,25 @@ class HubService:
                     provided = body if isinstance(body, str) else None
                     if provided != key:
                         if self.identity is not None:
-                            self._emit_error(outgoing, link, src=self.identity.hash, text="bad key (+k)", room=r)
+                            self._emit_error(
+                                outgoing,
+                                link,
+                                src=self.identity.hash,
+                                text="bad key (+k)",
+                                room=r,
+                            )
                         return
 
             # Room bans are room-local and apply to JOIN.
             if self._is_room_banned(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="banned from room", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="banned from room",
+                        room=r,
+                    )
                 return
 
             # If the room doesn't exist yet (in-memory), the first joiner is the founder.
@@ -2566,7 +2884,12 @@ class HubService:
                 mode_txt = self._room_mode_string(r)
                 topic_txt = topic if topic else "(none)"
                 reg_txt = "registered" if registered else "unregistered"
-                self._emit_notice(outgoing, link, r, f"room {r}: {reg_txt}; mode={mode_txt}; topic={topic_txt}")
+                self._emit_notice(
+                    outgoing,
+                    link,
+                    r,
+                    f"room {r}: {reg_txt}; mode={mode_txt}; topic={topic_txt}",
+                )
             except Exception:
                 pass
             return
@@ -2575,14 +2898,21 @@ class HubService:
             self._inc("parts")
             if not isinstance(room, str) or not room:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="PART requires room name")
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="PART requires room name",
+                    )
                 return
 
             try:
                 r = self._norm_room(room)
             except Exception as e:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text=str(e))
+                    self._emit_error(
+                        outgoing, link, src=self.identity.hash, text=str(e)
+                    )
                 return
 
             sess["rooms"].discard(r)
@@ -2610,7 +2940,9 @@ class HubService:
                 parted_body = members
 
             if self.identity is not None:
-                parted = make_envelope(T_PARTED, src=self.identity.hash, room=r, body=parted_body)
+                parted = make_envelope(
+                    T_PARTED, src=self.identity.hash, room=r, body=parted_body
+                )
                 self._queue_env(outgoing, link, parted)
 
             self.log.info(
@@ -2625,14 +2957,21 @@ class HubService:
         if t in (T_MSG, T_NOTICE):
             if not isinstance(room, str) or not room:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="message requires room name")
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="message requires room name",
+                    )
                 return
 
             try:
                 r = self._norm_room(room)
             except Exception as e:
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text=str(e))
+                    self._emit_error(
+                        outgoing, link, src=self.identity.hash, text=str(e)
+                    )
                 return
 
             if r not in sess["rooms"]:
@@ -2646,22 +2985,46 @@ class HubService:
 
                 if st is None:
                     if self.identity is not None:
-                        self._emit_error(outgoing, link, src=self.identity.hash, text="no such room", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="no such room",
+                            room=r,
+                        )
                     return
 
                 if bool(st.get("no_outside_msgs", False)):
                     if self.identity is not None:
-                        self._emit_error(outgoing, link, src=self.identity.hash, text="no outside messages (+n)", room=r)
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="no outside messages (+n)",
+                            room=r,
+                        )
                     return
 
             # Per-room moderation: bans and moderated mode.
             if self._is_room_banned(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="banned from room", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="banned from room",
+                        room=r,
+                    )
                 return
             if self._room_moderated(r) and not self._is_room_voiced(r, peer_hash):
                 if self.identity is not None:
-                    self._emit_error(outgoing, link, src=self.identity.hash, text="room is moderated (+m)", room=r)
+                    self._emit_error(
+                        outgoing,
+                        link,
+                        src=self.identity.hash,
+                        text="room is moderated (+m)",
+                        room=r,
+                    )
                 return
 
             if isinstance(body, str) and self._handle_operator_command(
@@ -2670,7 +3033,11 @@ class HubService:
                 return
 
             if peer_hash is not None:
-                env[K_SRC] = bytes(peer_hash) if isinstance(peer_hash, (bytes, bytearray)) else peer_hash
+                env[K_SRC] = (
+                    bytes(peer_hash)
+                    if isinstance(peer_hash, (bytes, bytearray))
+                    else peer_hash
+                )
             env[K_ROOM] = r
 
             # Backwards-compatible extension: hub can attach the nickname learned

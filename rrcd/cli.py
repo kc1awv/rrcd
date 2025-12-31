@@ -117,14 +117,12 @@ dest_name = "rrc.hub"
 announce_on_start = true
 announce_period_s = 0.0
 
-# WELCOME message fields.
+# Hub identity fields.
 hub_name = "rrc"
 greeting = ""
 
-# Note: Some Reticulum links have low MTU. If `greeting` is very long, the hub
-# may be unable to include it inside the initial WELCOME. In that case, rrcd
-# will send a minimal WELCOME and then deliver the greeting afterward via NOTICE
-# messages.
+# Note: The hub greeting is delivered after WELCOME via one or more NOTICE
+# messages. NOTICE payloads are chunked as needed to fit the Link MTU.
 
 # Operator / moderation
 #
@@ -296,7 +294,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
 
     p.add_argument("--hub-name", default=None, help="Hub name in WELCOME")
-    p.add_argument("--greeting", default=None, help="Greeting in WELCOME")
+    p.add_argument(
+        "--greeting",
+        default=None,
+        help="Greeting delivered via NOTICE after WELCOME",
+    )
     p.add_argument(
         "--include-joined-member-list",
         action="store_true",
