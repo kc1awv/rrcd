@@ -2168,8 +2168,28 @@ class HubService:
             return
 
         if t == T_HELLO:
+            # Allow re-authentication if client reconnects with same Link ID
+            # (can happen when client restarts but RNS reuses deterministic link_id)
             if self.identity is not None:
-                self._emit_error(outgoing, link, src=self.identity.hash, text="HELLO already sent")
+                # Reset session state and process as new HELLO
+                sess["welcomed"] = False
+                sess["rooms"] = set()
+                sess["nick"] = None
+                
+                # Process the HELLO message
+                if isinstance(body, dict):
+                    nick = body.get(B_HELLO_NICK)
+                    n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
+                    if n is not None:
+                        sess["nick"] = n
+                
+                # Send WELCOME
+                sess["welcomed"] = True
+                body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
+                if self.config.greeting:
+                    body_w[B_WELCOME_GREETING] = self.config.greeting
+                welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
+                self._queue_env(outgoing, link, welcome)
             return
 
         if t == T_JOIN:
