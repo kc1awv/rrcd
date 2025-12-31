@@ -46,6 +46,45 @@ Optional:
 
 You need a working Reticulum configuration (see Reticulum docs).
 
+## Logging
+
+By default, `rrcd` logs to stderr (good for systemd/journald). You can configure
+logging in `~/.rrcd/rrcd.toml`:
+
+```toml
+[logging]
+level = "INFO"         # set to DEBUG for connection/packet tracing
+rns_level = "WARNING"  # python-logging level for the "RNS" logger (if used)
+console = true
+file = ""              # e.g. "~/.rrcd/rrcd.log" (empty disables)
+format = "%(asctime)s %(levelname)s %(name)s[%(threadName)s]: %(message)s"
+datefmt = ""
+```
+
+CLI overrides are also available:
+
+- `rrcd --log-level DEBUG`
+- `rrcd --log-file ~/.rrcd/rrcd.log`
+
+If you use `/reload`, logging settings are applied immediately.
+
+### Troubleshooting: connect times out after HELLO
+
+If a client connects, sends `HELLO`, and then times out waiting for `WELCOME`,
+check the hub logs for an error like:
+
+- `Packet size of ... exceeds MTU of ... bytes`
+
+This usually means the hub tried to send a `WELCOME` (or other message) that is
+too large for the current Reticulum link MTU.
+
+Mitigations:
+
+- Keep `greeting` reasonably short if you want it to appear inside `WELCOME`.
+- If `WELCOME` would exceed MTU, `rrcd` automatically sends a minimal `WELCOME`
+    and then delivers the full greeting as one or more `NOTICE` messages sized to
+    fit the link MTU.
+
 ## Compatibility
 
 `rrcd` implements the core RRC protocol as described in the RRC docs.
