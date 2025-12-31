@@ -63,7 +63,9 @@ def configure_logging(
     if bool(cfg.log_console):
         handlers.append(logging.StreamHandler())
 
-    log_file = _clean_optional_path(override_file) if override_file is not None else None
+    log_file = (
+        _clean_optional_path(override_file) if override_file is not None else None
+    )
     if log_file is None:
         log_file = _clean_optional_path(cfg.log_file)
 
