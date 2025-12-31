@@ -158,6 +158,21 @@ rate_limit_msgs_per_minute = 240
 ping_interval_s = 0.0
 ping_timeout_s = 0.0
 
+# Large payload transfer via RNS.Resource
+#
+# When a message exceeds the link MTU, rrcd can use RNS.Resource for reliable
+# transfer instead of manual chunking. A small RESOURCE_ENVELOPE is sent first,
+# followed by the payload as an RNS.Resource.
+#
+# enable_resource_transfer: enable/disable feature (default: true)
+# max_resource_bytes: maximum size for a single resource (default: 256 KiB)
+# max_pending_resource_expectations: max pending expectations per link (default: 8)
+# resource_expectation_ttl_s: how long to wait for announced resource (default: 30s)
+enable_resource_transfer = true
+max_resource_bytes = 262144
+max_pending_resource_expectations = 8
+resource_expectation_ttl_s = 30.0
+
 [logging]
 
 # Log level for rrcd itself.
