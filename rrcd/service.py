@@ -14,9 +14,11 @@ from . import __version__
 from .codec import decode, encode
 from .config import HubRuntimeConfig
 from .constants import (
-    B_HELLO_NICK,
-    B_WELCOME_GREETING,
+    B_HELLO_CAPS,
+    B_HELLO_NICK_LEGACY,
     B_WELCOME_HUB,
+    B_WELCOME_VER,
+    B_WELCOME_CAPS,
     K_BODY,
     K_NICK,
     K_ROOM,
@@ -100,6 +102,12 @@ class HubService:
             "pongs_out": 0,
             "announces": 0,
         }
+
+    def _extract_caps(self, body: Any) -> dict[int, Any]:
+        if not isinstance(body, dict):
+            return {}
+        caps = body.get(B_HELLO_CAPS)
+        return caps if isinstance(caps, dict) else {}
 
     def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
         if isinstance(h, (bytes, bytearray)):
@@ -185,43 +193,31 @@ class HubService:
             return
 
         g = str(greeting) if greeting else ""
-
-        body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-        if g:
-            body_w[B_WELCOME_GREETING] = g
+        body_w: dict[int, Any] = {
+            B_WELCOME_HUB: self.config.hub_name,
+            B_WELCOME_VER: str(__version__),
+        }
+        # Capabilities are optional; keep WELCOME minimal unless needed.
 
         welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
         welcome_payload = encode(welcome)
 
-        if self._packet_would_fit(link, welcome_payload):
-            self._queue_payload(outgoing, link, welcome_payload)
-            self.log.debug(
-                "Queued WELCOME (with greeting) peer=%s link_id=%s",
-                self._fmt_hash(peer_hash),
-                self._fmt_link_id(link),
-            )
-            return
-
-        # Fallback: send a minimal WELCOME, then send the greeting as NOTICE
-        # chunks that each fit within the link MTU.
-        body_min: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
-        welcome_min = make_envelope(T_WELCOME, src=self.identity.hash, body=body_min)
-        welcome_min_payload = encode(welcome_min)
-
-        if not self._packet_would_fit(link, welcome_min_payload):
+        if not self._packet_would_fit(link, welcome_payload):
             self.log.warning(
-                "WELCOME would not fit MTU even without greeting; cannot welcome peer=%s link_id=%s",
+                "WELCOME would not fit MTU; cannot welcome peer=%s link_id=%s",
                 self._fmt_hash(peer_hash),
                 self._fmt_link_id(link),
             )
             return
 
-        self.log.warning(
-            "WELCOME too large for MTU; sending minimal WELCOME + NOTICE chunks peer=%s link_id=%s",
+        self._queue_payload(outgoing, link, welcome_payload)
+        self.log.debug(
+            "Queued WELCOME peer=%s link_id=%s",
             self._fmt_hash(peer_hash),
             self._fmt_link_id(link),
         )
-        self._queue_payload(outgoing, link, welcome_min_payload)
+
+        # The hub greeting is delivered as NOTICE after WELCOME.
         if g:
             self._queue_notice_chunks(outgoing, link, room=None, text=g)
 
@@ -2133,6 +2129,7 @@ class HubService:
                 "rooms": set(),
                 "peer": None,
                 "nick": None,
+                "peer_caps": {},
                 "awaiting_pong": None,
             }
 
@@ -2196,7 +2193,8 @@ class HubService:
             return
 
         sess["welcomed"] = True
-        # Prefer the queued WELCOME path so we can preflight MTU sizing.
+        # Use the queued path so we can preflight MTU sizing and optionally
+        # follow up with NOTICE chunks (e.g. greeting).
         outgoing: list[tuple[RNS.Link, bytes]] = []
         self._queue_welcome(
             outgoing,
@@ -2205,8 +2203,16 @@ class HubService:
             greeting=self.config.greeting,
         )
         for out_link, payload in outgoing:
+            self._inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
+            except OSError as e:
+                self.log.warning(
+                    "Send failed link_id=%s bytes=%s err=%s",
+                    self._fmt_link_id(out_link),
+                    len(payload),
+                    e,
+                )
             except Exception:
                 self.log.debug(
                     "Send failed link_id=%s bytes=%s",
@@ -2308,6 +2314,7 @@ class HubService:
             self._on_packet_locked(link, data, outgoing)
 
         for out_link, payload in outgoing:
+            self._inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
             except OSError as e:
@@ -2379,6 +2386,7 @@ class HubService:
         t = env.get(K_T)
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
+        nick = env.get(K_NICK)
 
         if self.log.isEnabledFor(logging.DEBUG):
             body_len = None
@@ -2408,11 +2416,20 @@ class HubService:
                     self._emit_error(outgoing, link, src=self.identity.hash, text="send HELLO first")
                 return
 
-            if isinstance(body, dict):
-                nick = body.get(B_HELLO_NICK)
+            if isinstance(nick, str):
                 n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                 if n is not None:
                     sess["nick"] = n
+
+            if isinstance(body, dict):
+                sess["peer_caps"] = self._extract_caps(body)
+
+                # Back-compat: if a legacy client put nick in HELLO body, accept it.
+                if sess.get("nick") is None:
+                    legacy_nick = body.get(B_HELLO_NICK_LEGACY)
+                    n2 = normalize_nick(legacy_nick, max_chars=self.config.nick_max_chars)
+                    if n2 is not None:
+                        sess["nick"] = n2
 
             self.log.info(
                 "HELLO peer=%s nick=%r link_id=%s",
@@ -2438,13 +2455,21 @@ class HubService:
                 sess["welcomed"] = False
                 sess["rooms"] = set()
                 sess["nick"] = None
+                sess["peer_caps"] = {}
 
                 # Process the HELLO message
-                if isinstance(body, dict):
-                    nick = body.get(B_HELLO_NICK)
+                if isinstance(nick, str):
                     n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                     if n is not None:
                         sess["nick"] = n
+
+                if isinstance(body, dict):
+                    sess["peer_caps"] = self._extract_caps(body)
+                    if sess.get("nick") is None:
+                        legacy_nick = body.get(B_HELLO_NICK_LEGACY)
+                        n2 = normalize_nick(legacy_nick, max_chars=self.config.nick_max_chars)
+                        if n2 is not None:
+                            sess["nick"] = n2
 
                 self.log.info(
                     "Re-HELLO peer=%s nick=%r link_id=%s",

@@ -80,14 +80,21 @@ too large for the current Reticulum link MTU.
 
 Mitigations:
 
-- Keep `greeting` reasonably short if you want it to appear inside `WELCOME`.
-- If `WELCOME` would exceed MTU, `rrcd` automatically sends a minimal `WELCOME`
-    and then delivers the full greeting as one or more `NOTICE` messages sized to
-    fit the link MTU.
+- `WELCOME` sent by `rrcd` is intentionally minimal (hub name/version/caps).
+- The hub `greeting` is delivered after `WELCOME` via one or more `NOTICE`
+    messages chunked to fit the link MTU.
 
 ## Compatibility
 
 `rrcd` implements the core RRC protocol as described in the RRC docs.
+
+Protocol alignment notes (for implementers):
+
+- `HELLO` and `WELCOME` bodies are CBOR maps with unsigned integer keys.
+- Capabilities are carried in body key `2` as a CBOR map (not a bitmask). Keys
+    inside the capabilities map are unsigned integers; values are advisory.
+- `WELCOME` is intentionally minimal (hub name/version/caps only). Any hub
+    greeting text is delivered after `WELCOME` via one or more `NOTICE` messages.
 
 Extensions beyond core RRC will be documented in the Extensions section of this
 README as they are added.
@@ -120,10 +127,10 @@ Wire-level extensions (backwards-compatible):
     hint associated with `K_SRC` so clients can display a human-friendly
     nickname instead of only the sender identity hash.
 
-    The hub learns this value from the client's `HELLO` body key
-    `B_HELLO_NICK = 0` and treats it as the authoritative nickname for that
-    link. Clients should treat `K_NICK` as optional and fall back to `K_SRC`
-    when it is missing.
+    The hub learns this value from the client's optional envelope nickname field
+    `K_NICK = 7` on inbound messages, and treats it as the authoritative nickname
+    for that link. Clients should treat `K_NICK` as optional and fall back to
+    `K_SRC` when it is missing.
 
     Nicknames are advisory only; clients should treat them as display hints.
     The hub may ignore, sanitize, replace, or omit them.
