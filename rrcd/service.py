@@ -35,6 +35,7 @@ from .constants import (
     T_WELCOME,
 )
 from .envelope import make_envelope, validate_envelope
+from .logging_config import configure_logging
 from .util import expand_path, normalize_nick
 
 
@@ -100,6 +101,21 @@ class HubService:
             "announces": 0,
         }
 
+    def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
+        if isinstance(h, (bytes, bytearray)):
+            s = bytes(h).hex()
+            return s if prefix <= 0 else s[: min(prefix, len(s))]
+        return "-"
+
+    def _fmt_link_id(self, link: RNS.Link) -> str:
+        lid = getattr(link, "link_id", None)
+        if isinstance(lid, (bytes, bytearray)):
+            return bytes(lid).hex()
+        h = getattr(link, "hash", None)
+        if isinstance(h, (bytes, bytearray)):
+            return bytes(h).hex()
+        return "-"
+
     def _inc(self, key: str, delta: int = 1) -> None:
         try:
             with self._state_lock:
@@ -161,6 +177,13 @@ class HubService:
             "Hub running dest_name=%s dest_hash=%s",
             self.config.dest_name,
             self.destination.hash.hex() if self.destination else "-",
+        )
+        self.log.info(
+            "Policy nick_max_chars=%s max_rooms=%s max_room_name_len=%s rate_limit_msgs_per_minute=%s",
+            self.config.nick_max_chars,
+            self.config.max_rooms_per_session,
+            self.config.max_room_name_len,
+            self.config.rate_limit_msgs_per_minute,
         )
 
         if self.config.ping_interval_s and self.config.ping_interval_s > 0:
@@ -260,6 +283,23 @@ class HubService:
         if isinstance(hub, dict):
             data = {**data, **hub}
 
+        log_table = data.get("logging") if isinstance(data, dict) else None
+        if isinstance(log_table, dict):
+            mapped: dict[str, object] = {}
+            if "level" in log_table:
+                mapped["log_level"] = log_table.get("level")
+            if "rns_level" in log_table:
+                mapped["log_rns_level"] = log_table.get("rns_level")
+            if "console" in log_table:
+                mapped["log_console"] = log_table.get("console")
+            if "file" in log_table:
+                mapped["log_file"] = log_table.get("file")
+            if "format" in log_table:
+                mapped["log_format"] = log_table.get("format")
+            if "datefmt" in log_table:
+                mapped["log_datefmt"] = log_table.get("datefmt")
+            data = {**data, **mapped}
+
         allowed = set(asdict(base).keys())
         # This identifies where to reload from; do not let the file override it.
         allowed.discard("config_path")
@@ -279,6 +319,10 @@ class HubService:
             updates["configdir"] = None
         if "greeting" in updates and updates["greeting"] == "":
             updates["greeting"] = None
+        if "log_file" in updates and updates["log_file"] == "":
+            updates["log_file"] = None
+        if "log_datefmt" in updates and updates["log_datefmt"] == "":
+            updates["log_datefmt"] = None
 
         return replace(base, **updates) if updates else base
 
@@ -662,6 +706,12 @@ class HubService:
                         ops.add(bytes(founder_st))
 
         self._ensure_worker_threads()
+
+        # Apply logging changes immediately.
+        try:
+            configure_logging(self.config)
+        except Exception:
+            self.log.exception("Failed to reconfigure logging")
 
         cfg_changes = self._diff_config_summary(old_cfg, new_cfg)
         room_changes = self._diff_room_registry_summary(old_registry, new_registry)
@@ -1988,6 +2038,8 @@ class HubService:
             lambda identified_link, ident: self._on_remote_identified(identified_link, ident)
         )
 
+        self.log.info("Link established link_id=%s", self._fmt_link_id(link))
+
     def _on_remote_identified(
         self, link: RNS.Link, identity: RNS.Identity | None
     ) -> None:
@@ -2007,6 +2059,11 @@ class HubService:
             )
 
         if banned:
+            self.log.warning(
+                "Disconnecting banned peer peer=%s link_id=%s",
+                self._fmt_hash(peer_hash),
+                self._fmt_link_id(link),
+            )
             if self.identity is not None:
                 try:
                     self._error(link, src=self.identity.hash, text="banned")
@@ -2017,6 +2074,13 @@ class HubService:
             except Exception:
                 pass
             return
+
+        if identity is not None:
+            self.log.info(
+                "Remote identified peer=%s link_id=%s",
+                self._fmt_hash(identity.hash),
+                self._fmt_link_id(link),
+            )
 
     def _welcome(self, link: RNS.Link, sess: dict[str, Any]) -> None:
         if self.identity is None:
@@ -2029,13 +2093,26 @@ class HubService:
 
         welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body)
         self._send(link, welcome)
+        self.log.debug(
+            "Sent WELCOME peer=%s link_id=%s",
+            self._fmt_hash(sess.get("peer")),
+            self._fmt_link_id(link),
+        )
 
     def _on_close(self, link: RNS.Link) -> None:
+        peer = None
+        nick = None
+        rooms_count = 0
+
         with self._state_lock:
             sess = self.sessions.pop(link, None)
             self._rate.pop(link, None)
             if not sess:
                 return
+
+            peer = sess.get("peer")
+            nick = sess.get("nick")
+            rooms_count = len(sess.get("rooms") or ())
 
             for room in list(sess["rooms"]):
                 self.rooms.get(room, set()).discard(link)
@@ -2045,13 +2122,26 @@ class HubService:
                     if st is not None and not st.get("registered"):
                         self._room_state.pop(room, None)
 
+        self.log.info(
+            "Link closed peer=%s nick=%r rooms=%s link_id=%s",
+            self._fmt_hash(peer),
+            nick,
+            rooms_count,
+            self._fmt_link_id(link),
+        )
+
     def _send(self, link: RNS.Link, env: dict) -> None:
         payload = encode(env)
         self._inc("bytes_out", len(payload))
         try:
             RNS.Packet(link, payload).send()
         except Exception:
-            pass
+            self.log.debug(
+                "Send failed link_id=%s bytes=%s",
+                self._fmt_link_id(link),
+                len(payload),
+                exc_info=True,
+            )
 
     def _error(
         self, link: RNS.Link, src: bytes, text: str, room: str | None = None
@@ -2097,7 +2187,12 @@ class HubService:
             try:
                 RNS.Packet(out_link, payload).send()
             except Exception:
-                pass
+                self.log.debug(
+                    "Send failed link_id=%s bytes=%s",
+                    self._fmt_link_id(out_link),
+                    len(payload),
+                    exc_info=True,
+                )
 
     def _on_packet_locked(
         self,
@@ -2124,6 +2219,12 @@ class HubService:
 
         if not self._refill_and_take(link, 1.0):
             self._inc("rate_limited")
+            if self.log.isEnabledFor(logging.DEBUG):
+                self.log.debug(
+                    "Rate limited peer=%s link_id=%s",
+                    self._fmt_hash(peer_hash),
+                    self._fmt_link_id(link),
+                )
             if self.identity is not None:
                 self._emit_error(outgoing, link, src=self.identity.hash, text="rate limited")
             return
@@ -2133,6 +2234,13 @@ class HubService:
             validate_envelope(env)
         except Exception as e:
             self._inc("pkts_bad")
+            self.log.debug(
+                "Bad packet peer=%s link_id=%s bytes=%s err=%s",
+                self._fmt_hash(peer_hash),
+                self._fmt_link_id(link),
+                len(data),
+                e,
+            )
             if self.identity is not None:
                 self._emit_error(outgoing, link, src=self.identity.hash, text=f"bad message: {e}")
             return
@@ -2140,6 +2248,23 @@ class HubService:
         t = env.get(K_T)
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
+
+        if self.log.isEnabledFor(logging.DEBUG):
+            body_len = None
+            if isinstance(body, (bytes, bytearray)):
+                body_len = len(body)
+            elif isinstance(body, str):
+                body_len = len(body)
+            self.log.debug(
+                "RX peer=%s link_id=%s t=%s room=%r bytes=%s body_type=%s body_len=%s",
+                self._fmt_hash(peer_hash),
+                self._fmt_link_id(link),
+                t,
+                room,
+                len(data),
+                type(body).__name__,
+                body_len,
+            )
 
         if t == T_PONG:
             self._inc("pongs_in")
@@ -2158,6 +2283,13 @@ class HubService:
                 if n is not None:
                     sess["nick"] = n
 
+            self.log.info(
+                "HELLO peer=%s nick=%r link_id=%s",
+                self._fmt_hash(peer_hash),
+                sess.get("nick"),
+                self._fmt_link_id(link),
+            )
+
             if self.identity is not None:
                 sess["welcomed"] = True
                 body_w: dict[int, Any] = {B_WELCOME_HUB: self.config.hub_name}
@@ -2175,13 +2307,20 @@ class HubService:
                 sess["welcomed"] = False
                 sess["rooms"] = set()
                 sess["nick"] = None
-                
+
                 # Process the HELLO message
                 if isinstance(body, dict):
                     nick = body.get(B_HELLO_NICK)
                     n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                     if n is not None:
                         sess["nick"] = n
+
+                self.log.info(
+                    "Re-HELLO peer=%s nick=%r link_id=%s",
+                    self._fmt_hash(peer_hash),
+                    sess.get("nick"),
+                    self._fmt_link_id(link),
+                )
                 
                 # Send WELCOME
                 sess["welcomed"] = True
@@ -2254,6 +2393,14 @@ class HubService:
 
             sess["rooms"].add(r)
             self.rooms.setdefault(r, set()).add(link)
+
+            self.log.info(
+                "JOIN peer=%s nick=%r room=%s link_id=%s",
+                self._fmt_hash(peer_hash),
+                sess.get("nick"),
+                r,
+                self._fmt_link_id(link),
+            )
 
             self._touch_room(r)
 
@@ -2334,6 +2481,14 @@ class HubService:
             if self.identity is not None:
                 parted = make_envelope(T_PARTED, src=self.identity.hash, room=r, body=parted_body)
                 self._queue_env(outgoing, link, parted)
+
+            self.log.info(
+                "PART peer=%s nick=%r room=%s link_id=%s",
+                self._fmt_hash(peer_hash),
+                sess.get("nick"),
+                r,
+                self._fmt_link_id(link),
+            )
             return
 
         if t in (T_MSG, T_NOTICE):
@@ -2400,6 +2555,17 @@ class HubService:
             payload = encode(env)
             for other in list(self.rooms.get(r, set())):
                 self._queue_payload(outgoing, other, payload)
+
+            if self.log.isEnabledFor(logging.DEBUG):
+                self.log.debug(
+                    "Forwarded t=%s peer=%s nick=%r room=%s recipients=%s body_type=%s",
+                    t,
+                    self._fmt_hash(peer_hash),
+                    sess.get("nick"),
+                    r,
+                    len(self.rooms.get(r, set())),
+                    type(body).__name__,
+                )
 
             if t == T_MSG:
                 self._inc("msgs_forwarded")

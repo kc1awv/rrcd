@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from dataclasses import asdict, replace
@@ -9,6 +8,7 @@ from dataclasses import asdict, replace
 import RNS
 
 from .config import HubRuntimeConfig
+from .logging_config import configure_logging
 from .paths import (
     default_config_path,
     default_identity_path,
@@ -32,6 +32,23 @@ def _apply_config_file(cfg: HubRuntimeConfig, path: str) -> HubRuntimeConfig:
     if isinstance(hub, dict):
         data = {**data, **hub}
 
+    log_table = data.get("logging") if isinstance(data, dict) else None
+    if isinstance(log_table, dict):
+        mapped: dict[str, object] = {}
+        if "level" in log_table:
+            mapped["log_level"] = log_table.get("level")
+        if "rns_level" in log_table:
+            mapped["log_rns_level"] = log_table.get("rns_level")
+        if "console" in log_table:
+            mapped["log_console"] = log_table.get("console")
+        if "file" in log_table:
+            mapped["log_file"] = log_table.get("file")
+        if "format" in log_table:
+            mapped["log_format"] = log_table.get("format")
+        if "datefmt" in log_table:
+            mapped["log_datefmt"] = log_table.get("datefmt")
+        data = {**data, **mapped}
+
     allowed = set(asdict(cfg).keys())
     # This identifies where to reload/persist from; do not let the file override it.
     allowed.discard("config_path")
@@ -50,6 +67,10 @@ def _apply_config_file(cfg: HubRuntimeConfig, path: str) -> HubRuntimeConfig:
         updates["configdir"] = None
     if "greeting" in updates and updates["greeting"] == "":
         updates["greeting"] = None
+    if "log_file" in updates and updates["log_file"] == "":
+        updates["log_file"] = None
+    if "log_datefmt" in updates and updates["log_datefmt"] == "":
+        updates["log_datefmt"] = None
     return replace(cfg, **updates) if updates else cfg
 
 
@@ -133,6 +154,24 @@ rate_limit_msgs_per_minute = 240
 # Hub-initiated liveness checks (0 disables).
 ping_interval_s = 0.0
 ping_timeout_s = 0.0
+
+[logging]
+
+# Log level for rrcd itself.
+level = "INFO"
+
+# Log level for Reticulum/RNS Python logging (if used by your install).
+rns_level = "WARNING"
+
+# Log to stderr (systemd/journald friendly).
+console = true
+
+# Optional file path for logs (leave empty to disable).
+file = ""
+
+# Log format and optional date format.
+format = "%(asctime)s %(levelname)s %(name)s[%(threadName)s]: %(message)s"
+datefmt = ""
 """
 
     with open(config_path, "w", encoding="utf-8") as f:
@@ -286,8 +325,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument(
         "--log-level",
-        default="INFO",
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
+        default=None,
+        help="Logging level override (DEBUG, INFO, WARNING, ERROR). Default comes from config.",
+    )
+
+    p.add_argument(
+        "--log-file",
+        default=None,
+        help="Log file path override (empty disables file logging). Default comes from config.",
     )
 
     return p
@@ -349,10 +394,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.ping_timeout is not None:
         cfg = replace(cfg, ping_timeout_s=float(args.ping_timeout))
 
-    logging.basicConfig(
-        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    if args.log_level is not None:
+        cfg = replace(cfg, log_level=str(args.log_level))
+    if args.log_file is not None:
+        cfg = replace(cfg, log_file=str(args.log_file) if str(args.log_file) else None)
+
+    configure_logging(cfg, override_level=args.log_level, override_file=args.log_file)
 
     svc = HubService(cfg)
     svc.start()
