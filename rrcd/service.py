@@ -2026,10 +2026,11 @@ class HubService:
                         link,
                         src=self.identity.hash,
                         text="not authorized",
-                        room=room,
+                        room=None,
                     )
                 return True
-            self._reload_config_and_rooms(link, room, outgoing)
+            # Hub-level command - send responses without room field
+            self._reload_config_and_rooms(link, None, outgoing)
             return True
 
         # Global/server-operator commands
@@ -2053,12 +2054,12 @@ class HubService:
             if len(parts) >= 2:
                 target_room = parts[1]
             if not isinstance(target_room, str) or not target_room:
-                self._emit_notice(outgoing, link, room, "usage: /who [room]")
+                self._emit_notice(outgoing, link, None, "usage: /who [room]")
                 return True
             try:
                 r = self._norm_room(target_room)
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
             members = []
@@ -2073,10 +2074,11 @@ class HubService:
                     members.append(f"{nick} ({ident[:12]})")
                 else:
                     members.append(ident)
+            # Send response without room field for hub-level query
             self._emit_notice(
                 outgoing,
                 link,
-                room,
+                None,
                 f"members in {r}: " + (", ".join(members) if members else "(none)"),
             )
             return True
@@ -2084,7 +2086,7 @@ class HubService:
         if cmd == "kick":
             if len(parts) < 3:
                 self._emit_notice(
-                    outgoing, link, room, "usage: /kick <room> <nick|hashprefix>"
+                    outgoing, link, None, "usage: /kick <room> <nick|hashprefix>"
                 )
                 return True
             target_room = parts[1]
@@ -2143,15 +2145,16 @@ class HubService:
                         link,
                         src=self.identity.hash,
                         text="not authorized",
-                        room=room,
+                        room=None,
                     )
                 return True
 
+            # Hub-level command - all responses without room field
             if len(parts) < 2:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "usage: /kline add|del|list [nick|hashprefix|hash]",
                 )
                 return True
@@ -2162,7 +2165,7 @@ class HubService:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "klines: " + (", ".join(items) if items else "(none)"),
                 )
                 return True
@@ -2171,14 +2174,14 @@ class HubService:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "usage: /kline add|del|list [nick|hashprefix|hash]",
                 )
                 return True
 
             if len(parts) < 3:
                 self._emit_notice(
-                    outgoing, link, room, f"usage: /kline {op} <nick|hashprefix|hash>"
+                    outgoing, link, None, f"usage: /kline {op} <nick|hashprefix|hash>"
                 )
                 return True
 
@@ -2190,48 +2193,48 @@ class HubService:
                     ph = tsess.get("peer") if tsess else None
                     if isinstance(ph, (bytes, bytearray)):
                         self._banned.add(bytes(ph))
-                        self._persist_banned_identities_to_config(link, room, outgoing)
+                        self._persist_banned_identities_to_config(link, None, outgoing)
                     try:
                         target_link.teardown()
                     except Exception:
                         pass
-                    self._emit_notice(outgoing, link, room, f"kline added for {target}")
+                    self._emit_notice(outgoing, link, None, f"kline added for {target}")
                     return True
 
                 try:
                     h = self._parse_identity_hash(target)
                 except Exception as e:
-                    self._emit_notice(outgoing, link, room, f"bad identity hash: {e}")
+                    self._emit_notice(outgoing, link, None, f"bad identity hash: {e}")
                     return True
                 self._banned.add(h)
-                self._persist_banned_identities_to_config(link, room, outgoing)
-                self._emit_notice(outgoing, link, room, f"kline added for {h.hex()}")
+                self._persist_banned_identities_to_config(link, None, outgoing)
+                self._emit_notice(outgoing, link, None, f"kline added for {h.hex()}")
                 return True
 
             # op == "del"
             try:
                 h = self._parse_identity_hash(target)
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad identity hash: {e}")
+                self._emit_notice(outgoing, link, None, f"bad identity hash: {e}")
                 return True
 
             if h in self._banned:
                 self._banned.discard(h)
-                self._persist_banned_identities_to_config(link, room, outgoing)
-                self._emit_notice(outgoing, link, room, f"kline removed for {h.hex()}")
+                self._persist_banned_identities_to_config(link, None, outgoing)
+                self._emit_notice(outgoing, link, None, f"kline removed for {h.hex()}")
             else:
-                self._emit_notice(outgoing, link, room, f"not klined: {h.hex()}")
+                self._emit_notice(outgoing, link, None, f"not klined: {h.hex()}")
             return True
 
         # Room-scoped moderation and maintenance
         if cmd == "register":
             if len(parts) < 2:
-                self._emit_notice(outgoing, link, room, "usage: /register <room>")
+                self._emit_notice(outgoing, link, None, "usage: /register <room>")
                 return True
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
             # Registration rules: requester must be in the room and must be the founder.
             # (No server-op override by design.)
@@ -2303,12 +2306,12 @@ class HubService:
 
         if cmd == "unregister":
             if len(parts) < 2:
-                self._emit_notice(outgoing, link, room, "usage: /unregister <room>")
+                self._emit_notice(outgoing, link, None, "usage: /unregister <room>")
                 return True
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
             if (
@@ -2351,12 +2354,12 @@ class HubService:
 
         if cmd == "topic":
             if len(parts) < 2:
-                self._emit_notice(outgoing, link, room, "usage: /topic <room> [topic]")
+                self._emit_notice(outgoing, link, None, "usage: /topic <room> [topic]")
                 return True
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
             st = self._room_state_ensure(r)
             if len(parts) == 2:
@@ -2399,13 +2402,13 @@ class HubService:
         if cmd in ("op", "deop", "voice", "devoice"):
             if len(parts) < 3:
                 self._emit_notice(
-                    outgoing, link, room, f"usage: /{cmd} <room> <nick|hashprefix|hash>"
+                    outgoing, link, None, f"usage: /{cmd} <room> <nick|hashprefix|hash>"
                 )
                 return True
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
@@ -2472,14 +2475,14 @@ class HubService:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+k|-k|+r|-r) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>",
                 )
                 return True
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
             if not self._is_room_op(r, peer_hash):
                 if self.identity is not None:
@@ -2629,7 +2632,7 @@ class HubService:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "usage: /ban <room> add|del|list [nick|hashprefix|hash]",
                 )
                 return True
@@ -2637,7 +2640,7 @@ class HubService:
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
             op = parts[2].strip().lower()
@@ -2730,7 +2733,7 @@ class HubService:
                 self._emit_notice(
                     outgoing,
                     link,
-                    room,
+                    None,
                     "usage: /invite <room> add|del|list [nick|hashprefix|hash]",
                 )
                 return True
@@ -2738,7 +2741,7 @@ class HubService:
             try:
                 r = self._norm_room(parts[1])
             except Exception as e:
-                self._emit_notice(outgoing, link, room, f"bad room: {e}")
+                self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
             if not self._is_room_op(r, peer_hash):
