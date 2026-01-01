@@ -2041,10 +2041,11 @@ class HubService:
                         link,
                         src=self.identity.hash,
                         text="not authorized",
-                        room=room,
+                        room=None,
                     )
                 return True
-            self._emit_notice(outgoing, link, room, self._format_stats())
+            # Send response without room field for hub-level command
+            self._emit_notice(outgoing, link, None, self._format_stats())
             return True
 
         if cmd in ("who", "names"):
