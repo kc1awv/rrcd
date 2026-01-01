@@ -314,18 +314,35 @@ If enabled, the hub sends `PING` periodically. If a client fails to respond with
 
 **Default**: Disabled (because Reticulum already has link-level keepalives).
 
-## Extension: Trusted Identities
+## Extension: Trusted Identities (Server Operators)
 
 Server operators can configure a list of trusted identity hashes. Trusted
-identities bypass certain checks (currently unused, reserved for future use).
+identities are granted **server operator** privileges, allowing them to execute
+administrative commands.
 
 ```toml
 trusted_identities = [
-    "a1b2c3d4...",
+    "a1b2c3d4e5f67890abcdef...",  # full 32-byte identity hash in hex
 ]
 ```
 
-This is a hub-local concept and not exposed to clients.
+**Server operator commands** (requires trusted identity):
+- `/reload` - Reload hub configuration and room registry
+- `/who <room>` - List members in a room if it exists
+- `/stats` - View hub statistics (messages, bytes, resources, sessions)
+- `/kline` - Global ban management (add/del/list)
+
+**Implementation**: The hub checks the peer's identity hash against the
+`trusted_identities` list. If a non-trusted user attempts a server operator
+command, they receive an `ERROR` message with "not authorized" and the command
+is rejected.
+
+**Security note**: Server operators also have implicit room operator status in
+all rooms, allowing them to moderate any room without being explicitly granted
+`+o` status.
+
+This is a hub-local concept and not exposed to clients (no capability flag or
+protocol message).
 
 ## Extension: Banned Identities (K-Lines)
 
