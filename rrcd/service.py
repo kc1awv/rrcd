@@ -3602,15 +3602,44 @@ class HubService:
             return
 
         if t in (T_MSG, T_NOTICE):
-            if not isinstance(room, str) or not room:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="message requires room name",
+            # Check for slash commands first, as they may not require a room.
+            # Per RRC spec, the room field is optional and may be empty.
+            if isinstance(body, str):
+                cmdline = body.strip()
+                if cmdline.startswith("/"):
+                    # It's a slash command - attempt to handle it
+                    handled = self._handle_operator_command(
+                        link, peer_hash=peer_hash, room=room, text=body, outgoing=outgoing
                     )
-                return
+                    if handled:
+                        return
+                    # Unrecognized slash command - send error
+                    if self.identity is not None:
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="unrecognized command",
+                            room=room,
+                        )
+                    return
+
+            # NOTICE messages are informational/non-conversational and don't require a room.
+            # MSG messages require a room for delivery.
+            if t == T_MSG:
+                if not isinstance(room, str) or not room:
+                    if self.identity is not None:
+                        self._emit_error(
+                            outgoing,
+                            link,
+                            src=self.identity.hash,
+                            text="message requires room name",
+                        )
+                    return
+            elif t == T_NOTICE:
+                # NOTICE without a room is allowed - just don't forward it anywhere
+                if not isinstance(room, str) or not room:
+                    return
 
             try:
                 r = self._norm_room(room)
@@ -3672,11 +3701,6 @@ class HubService:
                         text="room is moderated (+m)",
                         room=r,
                     )
-                return
-
-            if isinstance(body, str) and self._handle_operator_command(
-                link, peer_hash=peer_hash, room=r, text=body, outgoing=outgoing
-            ):
                 return
 
             if peer_hash is not None:
