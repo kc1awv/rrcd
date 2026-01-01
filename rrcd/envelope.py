@@ -85,8 +85,7 @@ def validate_envelope(env: dict) -> None:
         room = env[K_ROOM]
         if not isinstance(room, str):
             raise TypeError("room name must be a string")
-        if room == "":
-            raise ValueError("room name must not be empty")
+        # Per RRC spec, room field may be empty (e.g., for hub commands)
 
     if K_NICK in env:
         nick = env[K_NICK]
