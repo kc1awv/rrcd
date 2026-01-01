@@ -3110,6 +3110,13 @@ class HubService:
         with self._state_lock:
             self._on_packet_locked(link, data, outgoing)
 
+        if self.log.isEnabledFor(logging.DEBUG) and outgoing:
+            self.log.debug(
+                "Sending %d response(s) link_id=%s",
+                len(outgoing),
+                self._fmt_link_id(link),
+            )
+
         for out_link, payload in outgoing:
             self._inc("bytes_out", len(payload))
             try:
@@ -3608,10 +3615,23 @@ class HubService:
                 cmdline = body.strip()
                 if cmdline.startswith("/"):
                     # It's a slash command - attempt to handle it
+                    if self.log.isEnabledFor(logging.DEBUG):
+                        self.log.debug(
+                            "Slash command peer=%s link_id=%s cmd=%r room=%r",
+                            self._fmt_hash(peer_hash),
+                            self._fmt_link_id(link),
+                            cmdline,
+                            room,
+                        )
                     handled = self._handle_operator_command(
                         link, peer_hash=peer_hash, room=room, text=body, outgoing=outgoing
                     )
                     if handled:
+                        if self.log.isEnabledFor(logging.DEBUG):
+                            self.log.debug(
+                                "Slash command handled, queued=%d responses",
+                                len(outgoing),
+                            )
                         return
                     # Unrecognized slash command - send error
                     if self.identity is not None:
