@@ -115,6 +115,8 @@ policy-level features that are allowed by the spec:
 
 ## Extensions
 
+### Suggested reading: EX1-RRCD.md
+
 `rrcd` intentionally avoids adding new on-wire message types. Operator features
 use a hub-local convention: if a client sends a `MSG`/`NOTICE` whose body is a
 string beginning with `/`, and the command is recognized, the hub treats it as a
