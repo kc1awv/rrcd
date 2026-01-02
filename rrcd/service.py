@@ -2239,7 +2239,7 @@ class HubService:
             # Registration rules: requester must be in the room and must be the founder.
             # (No server-op override by design.)
             if (
-                room is None
+                not room
                 or self._norm_room(room) != r
                 or r not in self.sessions.get(link, {}).get("rooms", set())
             ):
@@ -2315,7 +2315,7 @@ class HubService:
                 return True
 
             if (
-                room is None
+                not room
                 or self._norm_room(room) != r
                 or r not in self.sessions.get(link, {}).get("rooms", set())
             ):
