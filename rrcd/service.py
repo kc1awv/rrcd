@@ -3735,15 +3735,24 @@ class HubService:
                 )
             env[K_ROOM] = r
 
-            # Backwards-compatible extension: hub can attach the nickname learned
-            # from HELLO so clients can render a human-friendly name.
-            nick = sess.get("nick")
-            n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
-            if n is not None:
-                env[K_NICK] = n
+            # Preserve the nickname from the incoming envelope if present.
+            # Fall back to session nickname (from HELLO) if client didn't provide one.
+            # This allows clients to update their nickname mid-session.
+            incoming_nick = env.get(K_NICK)
+            if incoming_nick is not None:
+                # Client provided a nickname in this message - validate and preserve it
+                n = normalize_nick(incoming_nick, max_chars=self.config.nick_max_chars)
+                if n is not None:
+                    env[K_NICK] = n
+                else:
+                    # Invalid nickname provided - remove it
+                    env.pop(K_NICK, None)
             else:
-                # Prevent client-supplied spoofed nicknames.
-                env.pop(K_NICK, None)
+                # No nickname in message - use session nickname from HELLO if available
+                nick = sess.get("nick")
+                n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
+                if n is not None:
+                    env[K_NICK] = n
 
             payload = encode(env)
             for other in list(self.rooms.get(r, set())):
