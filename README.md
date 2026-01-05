@@ -188,7 +188,8 @@ Server operator commands (require identity in `trusted_identities`):
 
 - `/stats` — show hub stats (uptime, clients, rooms, counters)
 - `/reload` — reload `rrcd.toml` and `rooms.toml` from disk
-- `/who [room]` — list members (nick and/or hash prefix)
+- `/who [room]` — list members (nick and/or hash prefix); private rooms (`+p`)
+    are hidden from non-operators
 - `/kline add <nick|hashprefix|hash>` — add a server-global ban (persists to
     `banned_identities`)
 - `/kline del <hash>` — remove a server-global ban (persists to
@@ -207,7 +208,8 @@ server operators):
 - `/mode <room> (+m|-m)` — set moderated mode
 - `/mode <room> (+i|-i)` — set invite-only mode
 - `/mode <room> (+k|-k) [key]` — set/clear room key (password)
-- `/mode <room> (+p|-p)` — set/clear private mode (room hidden from `/list`)
+- `/mode <room> (+p|-p)` — set/clear private mode (room hidden from `/list` and
+    `/who` for non-operators)
 - `/mode <room> (+t|-t)` — set topic-ops-only (only ops can change topic)
 - `/mode <room> (+n|-n)` — set no-outside-messages
 - `/mode <room> (+r|-r)` — read-only; use /register or /unregister

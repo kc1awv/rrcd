@@ -2102,6 +2102,13 @@ class HubService:
                 self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
+            # Check if room is private - only server operators can see private rooms
+            st = self._room_state_get(r)
+            if st and st.get("private"):
+                if not self._is_server_op(peer_hash):
+                    self._emit_notice(outgoing, link, None, f"room {r} is private")
+                    return True
+
             members = []
             for other in sorted(self.rooms.get(r, set()), key=lambda x: id(x)):
                 s = self.sessions.get(other)
