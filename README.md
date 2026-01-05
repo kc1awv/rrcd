@@ -207,6 +207,7 @@ server operators):
 - `/mode <room> (+m|-m)` — set moderated mode
 - `/mode <room> (+i|-i)` — set invite-only mode
 - `/mode <room> (+k|-k) [key]` — set/clear room key (password)
+- `/mode <room> (+p|-p)` — set/clear private mode (room hidden from `/list`)
 - `/mode <room> (+t|-t)` — set topic-ops-only (only ops can change topic)
 - `/mode <room> (+n|-n)` — set no-outside-messages
 - `/mode <room> (+r|-r)` — read-only; use /register or /unregister
@@ -222,6 +223,7 @@ server operators):
     `NOTICE` to the target)
 - `/invite <room> del <nick|hashprefix|hash>` — remove a room-local invite
 - `/invite <room> list` — list room-local invites
+- `/list` — list all registered public rooms with their topics
 
 Notes:
 
@@ -260,6 +262,7 @@ Supported keys per room:
 - `invite_only`: whether the room is in +i (bool)
 - `topic_ops_only`: whether the room is in +t (bool)
 - `no_outside_msgs`: whether the room is in +n (bool)
+- `private`: whether the room is in +p (bool; room hidden from `/list`)
 - `key`: room key/password for +k (string, optional)
 - `operators`: list of identity hashes (strings)
 - `voiced`: list of identity hashes (strings)

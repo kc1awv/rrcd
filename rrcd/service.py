@@ -1132,6 +1132,7 @@ class HubService:
         invite_only = bool(st.get("invite_only", False))
         topic_ops_only = bool(st.get("topic_ops_only", False))
         no_outside_msgs = bool(st.get("no_outside_msgs", False))
+        private = bool(st.get("private", False))
         key = st.get("key")
         has_key = isinstance(key, str) and bool(key)
         return {
@@ -1140,6 +1141,7 @@ class HubService:
             "invite_only": invite_only,
             "topic_ops_only": topic_ops_only,
             "no_outside_msgs": no_outside_msgs,
+            "private": private,
             "has_key": has_key,
         }
 
@@ -1155,6 +1157,8 @@ class HubService:
             flags.append("m")
         if m.get("no_outside_msgs"):
             flags.append("n")
+        if m.get("private"):
+            flags.append("p")
         if m.get("registered"):
             flags.append("r")
         if m.get("topic_ops_only"):
@@ -1407,6 +1411,7 @@ class HubService:
                 "invite_only": bool(base.get("invite_only", False)),
                 "topic_ops_only": bool(base.get("topic_ops_only", False)),
                 "no_outside_msgs": bool(base.get("no_outside_msgs", False)),
+                "private": bool(base.get("private", False)),
                 "key": base.get("key"),
                 "ops": set(base.get("ops", set())),
                 "voiced": set(base.get("voiced", set())),
@@ -1425,6 +1430,7 @@ class HubService:
             "invite_only": False,
             "topic_ops_only": False,
             "no_outside_msgs": False,
+            "private": False,
             "key": None,
             "ops": set([founder]) if founder is not None else set(),
             "voiced": set(),
@@ -2049,6 +2055,40 @@ class HubService:
             self._emit_notice(outgoing, link, None, self._format_stats())
             return True
 
+        if cmd == "list":
+            # List all registered, non-private rooms with their topics
+            with self._state_lock:
+                registered_rooms = []
+                for room_name, st in self._room_state.items():
+                    if st.get("registered") and not st.get("private"):
+                        topic = st.get("topic")
+                        registered_rooms.append((room_name, topic))
+                
+                # Also check room registry for rooms not currently in room_state
+                for room_name, reg in self._room_registry.items():
+                    if room_name not in self._room_state:
+                        if not reg.get("private"):
+                            topic = reg.get("topic")
+                            registered_rooms.append((room_name, topic))
+
+            if not registered_rooms:
+                self._emit_notice(outgoing, link, None, "No public rooms registered")
+                return True
+
+            # Sort rooms alphabetically
+            registered_rooms.sort(key=lambda x: x[0])
+            
+            # Format room list with topics
+            lines = ["Registered public rooms:"]
+            for room_name, topic in registered_rooms:
+                if topic:
+                    lines.append(f"  {room_name} - {topic}")
+                else:
+                    lines.append(f"  {room_name}")
+            
+            self._emit_notice(outgoing, link, None, "\n".join(lines))
+            return True
+
         if cmd in ("who", "names"):
             target_room = room
             if len(parts) >= 2:
@@ -2476,7 +2516,7 @@ class HubService:
                     outgoing,
                     link,
                     None,
-                    "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+k|-k|+r|-r) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>",
+                    "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+p|-p|+k|-k|+r|-r) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>",
                 )
                 return True
             try:
@@ -2520,6 +2560,13 @@ class HubService:
 
             if flag in ("+n", "-n"):
                 st["no_outside_msgs"] = flag == "+n"
+                self._touch_room(r)
+                self._persist_room_state_to_registry(link, r)
+                self._broadcast_room_mode(r, outgoing)
+                return True
+
+            if flag in ("+p", "-p"):
+                st["private"] = flag == "+p"
                 self._touch_room(r)
                 self._persist_room_state_to_registry(link, r)
                 self._broadcast_room_mode(r, outgoing)
@@ -2623,7 +2670,7 @@ class HubService:
                 outgoing,
                 link,
                 room,
-                "supported modes: +m -m +i -i +k -k +t -t +n -n +r -r +o -o +v -v",
+                "supported modes: +m -m +i -i +k -k +t -t +n -n +p -p +r -r +o -o +v -v",
             )
             return True
 
