@@ -2,6 +2,16 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.1.3 - 2026-01-05
+
+- Added `/list` command to discover registered public rooms with their topics (available to all users)
+- Added `+p` (private) channel mode to hide rooms from `/list` and `/who` commands
+- Private rooms are only visible in `/who` to server operators
+- Updated mode handling to support `+p`/`-p` flags and persist private status to room registry
+- Consolidated version number to single source in `rrcd/__init__.py` (pyproject.toml now reads it dynamically)
+- Documentation updates for new command and mode in README.md and EX1-RRCD.md
+
+
 ## 0.1.2 - 2026-01-01
 
 - Implemented RNS.Resource transfer for messages exceeding MTU limits, with resource envelope handling and automatic fallback

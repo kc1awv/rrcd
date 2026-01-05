@@ -180,8 +180,11 @@ These work from any room (or no room):
 
 - `/reload`: Reload hub configuration (server operator only)
 - `/stats`: Display hub statistics (server operator only)
-- `/who [room]`: List members in a room
+- `/who [room]`: List members in a room. Private rooms (`+p`) are hidden from
+    non-operators.
 - `/names [room]`: Alias for `/who`
+- `/list`: List all registered public rooms with their topics. Excludes private
+    rooms (`+p`) and ephemeral (non-registered) rooms.
 
 ### Room Management Commands
 
@@ -218,6 +221,8 @@ IRC-style mode flags (set via `/mode <room> <flag>`):
 - `+i` / `-i`: Invite-only (must be invited to join)
 - `+t` / `-t`: Topic protected (only operators can set topic)
 - `+n` / `-n`: No outside messages (must be in room to send messages)
+- `+p` / `-p`: Private room (hidden from `/list` command and `/who` for
+   non-operators)
 - `+k <key>` / `-k`: Room key/password (must provide key to join)
 - `+r` / `-r`: Registered room (read-only; use `/register` or `/unregister`)
 - `+o <hash>` / `-o <hash>`: Grant/remove operator status

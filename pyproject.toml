@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrcd"
-version = "0.1.2"
+dynamic = ["version"]
 description = "Reticulum Relay Chat daemon (hub service)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -43,6 +43,9 @@ rrcd = "rrcd.cli:main"
 
 [tool.setuptools]
 packages = ["rrcd"]
+
+[tool.setuptools.dynamic]
+version = {attr = "rrcd.__version__"}
 
 [tool.ruff]
 target-version = "py311"
