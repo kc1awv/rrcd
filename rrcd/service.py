@@ -95,6 +95,11 @@ class HubService:
         self._trusted: set[bytes] = set()
         self._banned: set[bytes] = set()
 
+        # Secondary indexes for efficient link lookups (O(1) instead of O(n)).
+        # These are maintained alongside sessions and must stay in sync.
+        self._index_by_hash: dict[bytes, RNS.Link] = {}  # identity hash -> link
+        self._index_by_nick: dict[str, set[RNS.Link]] = {}  # normalized nick (lowercase) -> links
+
         # Room state (hub-local conventions; no new on-wire message types).
         # _room_state holds active in-memory state (and registered state for empty rooms).
         # _room_registry holds registered rooms loaded from config.
@@ -268,6 +273,21 @@ class HubService:
                 self._counters[key] = int(self._counters.get(key, 0)) + int(delta)
         except Exception:
             pass
+
+    def _update_nick_index(self, link: RNS.Link, old_nick: str | None, new_nick: str | None) -> None:
+        """Update nick index when a nick changes. Must be called under _state_lock."""
+        # Remove old nick mapping
+        if old_nick:
+            old_key = old_nick.strip().lower()
+            if old_key in self._index_by_nick:
+                self._index_by_nick[old_key].discard(link)
+                if not self._index_by_nick[old_key]:
+                    self._index_by_nick.pop(old_key, None)
+        
+        # Add new nick mapping
+        if new_nick:
+            new_key = new_nick.strip().lower()
+            self._index_by_nick.setdefault(new_key, set()).add(link)
 
     # Resource transfer methods
 
@@ -1597,6 +1617,9 @@ class HubService:
     def _resolve_identity_hash(
         self, token: str, *, room: str | None = None
     ) -> bytes | None:
+        """Resolve token to identity hash. Returns hash if successful, None otherwise.
+        For ambiguous matches, use _resolve_identity_hash_with_matches instead.
+        """
         target_link = self._find_target_link(token, room=room)
         if target_link is not None:
             s = self.sessions.get(target_link)
@@ -1607,6 +1630,32 @@ class HubService:
             return self._parse_identity_hash(token)
         except Exception:
             return None
+
+    def _resolve_identity_hash_with_matches(
+        self, token: str, *, room: str | None = None
+    ) -> tuple[bytes | None, list[RNS.Link]]:
+        """Resolve token to identity hash, also returning all matching links.
+        Returns (hash, matches) tuple. Hash is None if ambiguous or not found.
+        Use matches list to provide helpful error messages.
+        """
+        matches = self._find_target_links(token, room=room)
+        
+        if len(matches) == 1:
+            # Exactly one match - get hash from session
+            s = self.sessions.get(matches[0])
+            ph = s.get("peer") if s else None
+            if isinstance(ph, (bytes, bytearray)):
+                return (bytes(ph), matches)
+        elif len(matches) > 1:
+            # Ambiguous - return None hash but provide matches for error message
+            return (None, matches)
+        
+        # No matches from nick/hash-prefix lookup - try raw hash parse
+        try:
+            h = self._parse_identity_hash(token)
+            return (h, [])
+        except Exception:
+            return (None, [])
 
     def _persist_room_state_to_registry(self, link: RNS.Link, room: str | None) -> None:
         if room is None:
@@ -2033,15 +2082,24 @@ class HubService:
             )
         )
 
-        return "\n".join(lines)
+        return "".join(lines)
 
     def _find_target_link(self, token: str, room: str | None = None) -> RNS.Link | None:
+        """Find a link by nick or identity hash prefix. Uses indexes for O(1) lookups.
+        Returns the link if exactly one match, None otherwise.
+        """
+        result = self._find_target_links(token, room)
+        if len(result) == 1:
+            return result[0]
+        return None
+
+    def _find_target_links(self, token: str, room: str | None = None) -> list[RNS.Link]:
+        """Find all links matching a nick or identity hash prefix.
+        Returns list of matching links (empty if none, multiple if ambiguous).
+        """
         t = token.strip().lower()
         if not t:
-            return None
-
-        with self._state_lock:
-            items = list(self.sessions.items())
+            return []
 
         # If it's hex-like, treat as an identity hash prefix.
         hex_candidate = t[2:] if t.startswith("0x") else t
@@ -2053,31 +2111,67 @@ class HubService:
                 prefix = bytes.fromhex(hex_candidate)
             except Exception:
                 prefix = None
+            
             if prefix is not None:
-                matches: list[RNS.Link] = []
-                for candidate_link, sess in items:
-                    ph = sess.get("peer")
-                    if isinstance(ph, (bytes, bytearray)) and bytes(ph).startswith(
-                        prefix
-                    ):
-                        if room is not None and room not in sess.get("rooms", set()):
-                            continue
-                        matches.append(candidate_link)
-                if len(matches) == 1:
-                    return matches[0]
-                return None
+                with self._state_lock:
+                    # Search hash index for matching prefixes
+                    matches: list[RNS.Link] = []
+                    for peer_hash, candidate_link in self._index_by_hash.items():
+                        if peer_hash.startswith(prefix):
+                            # Check room membership if specified
+                            if room is not None:
+                                sess = self.sessions.get(candidate_link)
+                                if sess and room not in sess.get("rooms", set()):
+                                    continue
+                            matches.append(candidate_link)
+                
+                return matches
 
-        # Otherwise treat as nickname (best-effort).
-        matches = []
-        for candidate_link, sess in items:
-            nick = sess.get("nick")
-            if isinstance(nick, str) and nick.strip().lower() == t:
-                if room is not None and room not in sess.get("rooms", set()):
+        # Otherwise treat as nickname - use nick index for O(1) lookup
+        with self._state_lock:
+            candidate_links = self._index_by_nick.get(t, set())
+            if not candidate_links:
+                return []
+            
+            # Filter by room membership if specified
+            if room is not None:
+                matches = []
+                for candidate_link in candidate_links:
+                    sess = self.sessions.get(candidate_link)
+                    if sess and room in sess.get("rooms", set()):
+                        matches.append(candidate_link)
+            else:
+                matches = list(candidate_links)
+        
+        return matches
+
+    def _format_ambiguous_targets(
+        self, token: str, matches: list[RNS.Link]
+    ) -> str:
+        """Format a helpful message when target lookup is ambiguous."""
+        if not matches:
+            return f"target '{token}' not found"
+        
+        with self._state_lock:
+            items = []
+            for match_link in matches:
+                sess = self.sessions.get(match_link)
+                if not sess:
                     continue
-                matches.append(candidate_link)
-        if len(matches) == 1:
-            return matches[0]
-        return None
+                peer = sess.get("peer")
+                nick = sess.get("nick")
+                hash_str = self._fmt_hash(peer, prefix=16) if peer else "?"
+                nick_str = f"nick={nick!r}" if nick else "(no nick)"
+                items.append(f"{hash_str} {nick_str}")
+        
+        if len(items) == 0:
+            return f"target '{token}' not found"
+        
+        return (
+            f"ambiguous: '{token}' matches {len(items)} identities:\n"
+            + "\n".join(f"  - {item}" for item in items)
+            + "\nUse full or longer identity hash to disambiguate."
+        )
 
     def _handle_operator_command(
         self,
@@ -2233,8 +2327,10 @@ class HubService:
 
             target_link = self._find_target_link(target, room=r)
             if target_link is None:
+                # Check if ambiguous or just not found
+                all_matches = self._find_target_links(target, room=r)
                 self._emit_notice(
-                    outgoing, link, room, "target not found (or ambiguous)"
+                    outgoing, link, room, self._format_ambiguous_targets(target, all_matches)
                 )
                 return True
 
@@ -2324,6 +2420,16 @@ class HubService:
                     self._emit_notice(outgoing, link, None, f"kline added for {target}")
                     return True
 
+                # Not found as active link - check if ambiguous or try as raw hash
+                all_matches = self._find_target_links(target, room=None)
+                if all_matches:
+                    # Ambiguous
+                    self._emit_notice(
+                        outgoing, link, None, self._format_ambiguous_targets(target, all_matches)
+                    )
+                    return True
+
+                # Try as raw hash
                 try:
                     h = self._parse_identity_hash(target)
                 except Exception as e:
@@ -2543,12 +2649,14 @@ class HubService:
                         room=r,
                     )
                 return True
-            target_hash = self._resolve_identity_hash(parts[2], room=r)
+            
+            target_hash, all_matches = self._resolve_identity_hash_with_matches(parts[2], room=r)
             if target_hash is None:
                 self._emit_notice(
-                    outgoing, link, room, "target not found (or invalid hash)"
+                    outgoing, link, room, self._format_ambiguous_targets(parts[2], all_matches)
                 )
                 return True
+            
             st = self._room_state_ensure(r)
             founder = st.get("founder")
             founder_b = (
@@ -2690,10 +2798,10 @@ class HubService:
                     )
                     return True
 
-                target_hash = self._resolve_identity_hash(parts[3], room=r)
+                target_hash, all_matches = self._resolve_identity_hash_with_matches(parts[3], room=r)
                 if target_hash is None:
                     self._emit_notice(
-                        outgoing, link, room, "target not found (or invalid hash)"
+                        outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
                     )
                     return True
 
@@ -2814,10 +2922,10 @@ class HubService:
                     )
                 return True
 
-            target_hash = self._resolve_identity_hash(parts[3], room=r)
+            target_hash, all_matches = self._resolve_identity_hash_with_matches(parts[3], room=r)
             if target_hash is None:
                 self._emit_notice(
-                    outgoing, link, room, "target not found (or invalid hash)"
+                    outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
                 )
                 return True
 
@@ -2943,12 +3051,14 @@ class HubService:
                 token = parts[3]
                 target_link = self._find_target_link(token, room=None)
                 if target_link is None:
+                    # Check if ambiguous or just not found
+                    all_matches = self._find_target_links(token, room=None)
                     if self.identity is not None:
                         self._emit_error(
                             outgoing,
                             link,
                             src=self.identity.hash,
-                            text="invite failed: target is offline or ambiguous",
+                            text=f"invite failed: {self._format_ambiguous_targets(token, all_matches)}",
                             room=r,
                         )
                     return True
@@ -3009,10 +3119,10 @@ class HubService:
                     )
                 return True
 
-            target_hash = self._resolve_identity_hash(parts[3], room=None)
+            target_hash, all_matches = self._resolve_identity_hash_with_matches(parts[3], room=None)
             if target_hash is None:
                 self._emit_notice(
-                    outgoing, link, room, "target not found (or invalid hash)"
+                    outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
                 )
                 return True
 
@@ -3166,6 +3276,13 @@ class HubService:
             peer = sess.get("peer")
             nick = sess.get("nick")
             rooms_count = len(sess.get("rooms") or ())
+            
+            # Clean up indexes
+            if isinstance(peer, (bytes, bytearray)):
+                self._index_by_hash.pop(bytes(peer), None)
+            
+            if nick:
+                self._update_nick_index(link, nick, None)
 
             for room in list(sess["rooms"]):
                 self.rooms.get(room, set()).discard(link)
@@ -3471,22 +3588,31 @@ class HubService:
                     )
                 return
 
+            old_nick = sess.get("nick")
+            new_nick = None
+            
             if isinstance(nick, str):
                 n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                 if n is not None:
+                    new_nick = n
                     sess["nick"] = n
 
             if isinstance(body, dict):
                 sess["peer_caps"] = self._extract_caps(body)
 
                 # Back-compat: if a legacy client put nick in HELLO body, accept it.
-                if sess.get("nick") is None:
+                if new_nick is None:
                     legacy_nick = body.get(B_HELLO_NICK_LEGACY)
                     n2 = normalize_nick(
                         legacy_nick, max_chars=self.config.nick_max_chars
                     )
                     if n2 is not None:
+                        new_nick = n2
                         sess["nick"] = n2
+            
+            # Update nick index if nick changed
+            if old_nick != new_nick:
+                self._update_nick_index(link, old_nick, new_nick)
 
             self.log.info(
                 "HELLO peer=%s nick=%r link_id=%s",
@@ -3509,26 +3635,35 @@ class HubService:
             # (can happen when client restarts but RNS reuses deterministic link_id)
             if self.identity is not None:
                 # Reset session state and process as new HELLO
+                old_nick = sess.get("nick")
                 sess["welcomed"] = False
                 sess["rooms"] = set()
                 sess["nick"] = None
                 sess["peer_caps"] = {}
+                
+                new_nick = None
 
                 # Process the HELLO message
                 if isinstance(nick, str):
                     n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
                     if n is not None:
+                        new_nick = n
                         sess["nick"] = n
 
                 if isinstance(body, dict):
                     sess["peer_caps"] = self._extract_caps(body)
-                    if sess.get("nick") is None:
+                    if new_nick is None:
                         legacy_nick = body.get(B_HELLO_NICK_LEGACY)
                         n2 = normalize_nick(
                             legacy_nick, max_chars=self.config.nick_max_chars
                         )
                         if n2 is not None:
+                            new_nick = n2
                             sess["nick"] = n2
+                
+                # Update nick index if nick changed
+                if old_nick != new_nick:
+                    self._update_nick_index(link, old_nick, new_nick)
 
                 self.log.info(
                     "Re-HELLO peer=%s nick=%r link_id=%s",
@@ -3873,6 +4008,11 @@ class HubService:
                 # Client provided a nickname in this message - validate and preserve it
                 n = normalize_nick(incoming_nick, max_chars=self.config.nick_max_chars)
                 if n is not None:
+                    # Update session nick and index if it changed
+                    old_session_nick = sess.get("nick")
+                    if old_session_nick != n:
+                        sess["nick"] = n
+                        self._update_nick_index(link, old_session_nick, n)
                     env[K_NICK] = n
                 else:
                     # Invalid nickname provided - remove it
