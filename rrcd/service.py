@@ -159,7 +159,12 @@ class HubService:
         return "-"
 
     def _packet_would_fit(self, link: RNS.Link, payload: bytes) -> bool:
+        """Check if payload fits within link MDU without creating/packing packets."""
         try:
+            # Query link MDU directly if available (more efficient than packing)
+            if hasattr(link, 'MDU') and link.MDU is not None:
+                return len(payload) <= link.MDU
+            # Fall back to packet creation if MDU not available
             pkt = RNS.Packet(link, payload)
             pkt.pack()
             return True
@@ -533,15 +538,50 @@ class HubService:
                 )
                 return
             
-            # Log the notice (don't send back to sender)
             self.log.info(
                 "Received large NOTICE via resource link_id=%s room=%r chars=%s",
                 self._fmt_link_id(link),
                 exp.room,
                 len(text),
             )
-            # Note: In a full implementation, this would be forwarded to other room members
-            # For now, just acknowledge receipt
+            
+            # Forward NOTICE to room members if room is specified
+            if exp.room and self.identity is not None:
+                with self._state_lock:
+                    sess = self.sessions.get(link)
+                    peer_hash = sess.get("peer") if sess else None
+                    room_members = self.rooms.get(exp.room, set())
+                
+                if peer_hash and room_members:
+                    notice_env = make_envelope(
+                        T_NOTICE,
+                        src=peer_hash,
+                        room=exp.room,
+                        body=text,
+                    )
+                    notice_payload = encode(notice_env)
+                    
+                    # Forward to all room members except sender
+                    forwarded = 0
+                    for other in room_members:
+                        if other != link:
+                            try:
+                                other.packet(notice_payload)
+                                forwarded += 1
+                            except Exception as e:
+                                self.log.warning(
+                                    "Failed to forward NOTICE resource link_id=%s: %s",
+                                    self._fmt_link_id(other),
+                                    e,
+                                )
+                    
+                    if forwarded > 0:
+                        self._inc("notices_forwarded")
+                        self.log.debug(
+                            "Forwarded NOTICE resource to %d members room=%s",
+                            forwarded,
+                            exp.room,
+                        )
             
         elif exp.kind == RES_KIND_MOTD:
             # Similar to NOTICE
