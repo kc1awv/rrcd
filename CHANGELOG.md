@@ -11,6 +11,13 @@ This project follows the versioning policy in VERSIONING.md.
 - Consolidated version number to single source in `rrcd/__init__.py` (pyproject.toml now reads it dynamically)
 - Documentation updates for new command and mode in README.md and EX1-RRCD.md
 
+### Minor fixes
+
+- Fix potential deadlock in _resource_advertised
+- Add resource timeout cleanup
+- Improve notice as resource handling and probe for link MDU with fallback
+- Improve nickname updates, O(1) lookups, nick tracking, disambiguation on multiple matches
+
 
 ## 0.1.2 - 2026-01-01
 
