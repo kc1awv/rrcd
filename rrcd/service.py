@@ -12,11 +12,9 @@ from typing import Any
 import RNS
 
 from . import __version__
-from .codec import decode, encode
+from .codec import encode
 from .config import HubRuntimeConfig
 from .constants import (
-    B_HELLO_CAPS,
-    B_HELLO_NICK_LEGACY,
     B_RES_ENCODING,
     B_RES_ID,
     B_RES_KIND,
@@ -24,36 +22,20 @@ from .constants import (
     B_RES_SIZE,
     B_WELCOME_HUB,
     B_WELCOME_VER,
-    K_BODY,
-    K_NICK,
-    K_ROOM,
-    K_SRC,
-    K_T,
     RES_KIND_BLOB,
     RES_KIND_MOTD,
     RES_KIND_NOTICE,
     T_ERROR,
-    T_HELLO,
-    T_JOIN,
-    T_JOINED,
-    T_MSG,
     T_NOTICE,
-    T_PART,
-    T_PARTED,
     T_PING,
-    T_PONG,
     T_RESOURCE_ENVELOPE,
     T_WELCOME,
 )
-from .envelope import make_envelope, validate_envelope
+from .envelope import make_envelope
 from .logging_config import configure_logging
-from .util import expand_path, normalize_nick
-
-
-@dataclass
-class _RateState:
-    tokens: float
-    last_refill: float
+from .router import MessageRouter
+from .session import SessionManager
+from .util import expand_path
 
 
 @dataclass
@@ -81,12 +63,31 @@ class HubService:
 
         self._shutdown = threading.Event()
 
+        # Message router for handling protocol messages
+        self.router = MessageRouter(self)
+        
+        # Session manager for connection lifecycle
+        self.session_manager = SessionManager(self)
+
+    @property
+    def sessions(self) -> dict[RNS.Link, dict[str, Any]]:
+        """Delegate to session_manager.sessions for backward compatibility."""
+        return self.session_manager.sessions
+
+    @property
+    def _index_by_hash(self) -> dict[bytes, RNS.Link]:
+        """Delegate to session_manager for backward compatibility."""
+        return self.session_manager._index_by_hash
+    
+    @property
+    def _index_by_nick(self) -> dict[str, set[RNS.Link]]:
+        """Delegate to session_manager for backward compatibility."""
+        return self.session_manager._index_by_nick
+
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
 
         self.rooms: dict[str, set[RNS.Link]] = {}
-        self.sessions: dict[RNS.Link, dict[str, Any]] = {}
-        self._rate: dict[RNS.Link, _RateState] = {}
 
         # Resource transfer state
         self._resource_expectations: dict[RNS.Link, dict[bytes, _ResourceExpectation]] = {}
@@ -96,11 +97,6 @@ class HubService:
 
         self._trusted: set[bytes] = set()
         self._banned: set[bytes] = set()
-
-        # Secondary indexes for efficient link lookups (O(1) instead of O(n)).
-        # These are maintained alongside sessions and must stay in sync.
-        self._index_by_hash: dict[bytes, RNS.Link] = {}  # identity hash -> link
-        self._index_by_nick: dict[str, set[RNS.Link]] = {}  # normalized nick (lowercase) -> links
 
         # Room state (hub-local conventions; no new on-wire message types).
         # _room_state holds active in-memory state (and registered state for empty rooms).
@@ -144,11 +140,7 @@ class HubService:
             "resource_bytes_received": 0,
         }
 
-    def _extract_caps(self, body: Any) -> dict[int, Any]:
-        if not isinstance(body, dict):
-            return {}
-        caps = body.get(B_HELLO_CAPS)
-        return caps if isinstance(caps, dict) else {}
+
 
     def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
         if isinstance(h, (bytes, bytearray)):
@@ -277,19 +269,8 @@ class HubService:
             pass
 
     def _update_nick_index(self, link: RNS.Link, old_nick: str | None, new_nick: str | None) -> None:
-        """Update nick index when a nick changes. Must be called under _state_lock."""
-        # Remove old nick mapping
-        if old_nick:
-            old_key = old_nick.strip().lower()
-            if old_key in self._index_by_nick:
-                self._index_by_nick[old_key].discard(link)
-                if not self._index_by_nick[old_key]:
-                    self._index_by_nick.pop(old_key, None)
-        
-        # Add new nick mapping
-        if new_nick:
-            new_key = new_nick.strip().lower()
-            self._index_by_nick.setdefault(new_key, set()).add(link)
+        """Update nick index when a nick changes. Delegates to SessionManager."""
+        self.session_manager.update_nick_index(link, old_nick, new_nick)
 
     # Resource transfer methods
 
@@ -982,10 +963,8 @@ class HubService:
         self._shutdown.set()
 
         with self._state_lock:
-            links = list(self.sessions.keys())
-            self.sessions.clear()
+            links = self.session_manager.clear_all()
             self.rooms.clear()
-            self._rate.clear()
             self._resource_expectations.clear()
             self._active_resources.clear()
 
@@ -2056,13 +2035,10 @@ class HubService:
         uptime_s = (now_mono - started_mono) if started_mono is not None else 0.0
 
         with self._state_lock:
-            sessions_total = len(self.sessions)
-            sessions_welcomed = sum(
-                1 for s in self.sessions.values() if s.get("welcomed")
-            )
-            sessions_identified = sum(
-                1 for s in self.sessions.values() if s.get("peer") is not None
-            )
+            session_stats = self.session_manager.get_stats()
+            sessions_total = session_stats["total"]
+            sessions_welcomed = session_stats["welcomed"]
+            sessions_identified = session_stats["identified"]
 
             rooms_total = len(self.rooms)
             memberships = sum(len(v) for v in self.rooms.values())
@@ -3194,19 +3170,7 @@ class HubService:
 
     def _on_link(self, link: RNS.Link) -> None:
         with self._state_lock:
-            self.sessions[link] = {
-                "welcomed": False,
-                "rooms": set(),
-                "peer": None,
-                "nick": None,
-                "peer_caps": {},
-                "awaiting_pong": None,
-            }
-
-            self._rate[link] = _RateState(
-                tokens=float(self.config.rate_limit_msgs_per_minute),
-                last_refill=time.monotonic(),
-            )
+            self.session_manager.on_link_established(link)
             
             # Initialize resource tracking for this link
             self._resource_expectations[link] = {}
@@ -3243,19 +3207,9 @@ class HubService:
         self, link: RNS.Link, identity: RNS.Identity | None
     ) -> None:
         banned = False
+        peer_hash = None
         with self._state_lock:
-            sess = self.sessions.get(link)
-            if sess is None:
-                return
-
-            if identity is not None:
-                sess["peer"] = identity.hash
-
-            peer_hash = sess.get("peer")
-            banned = (
-                isinstance(peer_hash, (bytes, bytearray))
-                and bytes(peer_hash) in self._banned
-            )
+            banned, peer_hash = self.session_manager.on_remote_identified(link, identity)
 
         if banned:
             self.log.warning(
@@ -3272,14 +3226,6 @@ class HubService:
                 link.teardown()
             except Exception:
                 pass
-            return
-
-        if identity is not None:
-            self.log.info(
-                "Remote identified peer=%s link_id=%s",
-                self._fmt_hash(identity.hash),
-                self._fmt_link_id(link),
-            )
 
     def _welcome(self, link: RNS.Link, sess: dict[str, Any]) -> None:
         if self.identity is None:
@@ -3320,34 +3266,12 @@ class HubService:
         rooms_count = 0
 
         with self._state_lock:
-            sess = self.sessions.pop(link, None)
-            self._rate.pop(link, None)
-            
             # Clean up resource state
             self._resource_expectations.pop(link, None)
             self._active_resources.pop(link, None)
             
-            if not sess:
-                return
-
-            peer = sess.get("peer")
-            nick = sess.get("nick")
-            rooms_count = len(sess.get("rooms") or ())
-            
-            # Clean up indexes
-            if isinstance(peer, (bytes, bytearray)):
-                self._index_by_hash.pop(bytes(peer), None)
-            
-            if nick:
-                self._update_nick_index(link, nick, None)
-
-            for room in list(sess["rooms"]):
-                self.rooms.get(room, set()).discard(link)
-                if room in self.rooms and not self.rooms[room]:
-                    self.rooms.pop(room, None)
-                    st = self._room_state_get(room)
-                    if st is not None and not st.get("registered"):
-                        self._room_state.pop(room, None)
+            # Clean up session (also handles room cleanup)
+            peer, nick, rooms_count = self.session_manager.on_link_closed(link)
 
         self.log.info(
             "Link closed peer=%s nick=%r rooms=%s link_id=%s",
@@ -3392,23 +3316,8 @@ class HubService:
         return r
 
     def _refill_and_take(self, link: RNS.Link, cost: float = 1.0) -> bool:
-        with self._state_lock:
-            state = self._rate.get(link)
-            if state is None:
-                return True
-
-            now = time.monotonic()
-            per_min = float(max(1, int(self.config.rate_limit_msgs_per_minute)))
-            rate_per_s = per_min / 60.0
-            elapsed = max(0.0, now - state.last_refill)
-            state.tokens = min(per_min, state.tokens + elapsed * rate_per_s)
-            state.last_refill = now
-
-            if state.tokens < cost:
-                return False
-
-            state.tokens -= cost
-            return True
+        """Token bucket rate limiting. Delegates to SessionManager."""
+        return self.session_manager.refill_and_take(link, cost)
 
     def _on_packet(self, link: RNS.Link, data: bytes) -> None:
         # Packet callbacks can occur concurrently with other link callbacks and
@@ -3450,677 +3359,12 @@ class HubService:
         data: bytes,
         outgoing: list[tuple[RNS.Link, bytes]],
     ) -> None:
-        sess = self.sessions.get(link)
-        if sess is None:
-            return
-
-        self._inc("pkts_in")
-        self._inc("bytes_in", len(data))
-
-        peer_hash = sess.get("peer")
-        if peer_hash is None:
-            ri = link.get_remote_identity()
-            if ri is None:
-                # Per spec: the Link is the handshake. Ignore all traffic until it
-                # is identified.
-                return
-            peer_hash = ri.hash
-            sess["peer"] = peer_hash
-
-        if not self._refill_and_take(link, 1.0):
-            self._inc("rate_limited")
-            if self.log.isEnabledFor(logging.DEBUG):
-                self.log.debug(
-                    "Rate limited peer=%s link_id=%s",
-                    self._fmt_hash(peer_hash),
-                    self._fmt_link_id(link),
-                )
-            if self.identity is not None:
-                self._emit_error(
-                    outgoing, link, src=self.identity.hash, text="rate limited"
-                )
-            return
-
-        try:
-            env = decode(data)
-            validate_envelope(env)
-        except Exception as e:
-            self._inc("pkts_bad")
-            self.log.debug(
-                "Bad packet peer=%s link_id=%s bytes=%s err=%s",
-                self._fmt_hash(peer_hash),
-                self._fmt_link_id(link),
-                len(data),
-                e,
-            )
-            if self.identity is not None:
-                self._emit_error(
-                    outgoing, link, src=self.identity.hash, text=f"bad message: {e}"
-                )
-            return
-
-        t = env.get(K_T)
-        room = env.get(K_ROOM)
-        body = env.get(K_BODY)
-        nick = env.get(K_NICK)
-
-        if self.log.isEnabledFor(logging.DEBUG):
-            body_len = None
-            if isinstance(body, (bytes, bytearray)):
-                body_len = len(body)
-            elif isinstance(body, str):
-                body_len = len(body)
-            self.log.debug(
-                "RX peer=%s link_id=%s t=%s room=%r bytes=%s body_type=%s body_len=%s",
-                self._fmt_hash(peer_hash),
-                self._fmt_link_id(link),
-                t,
-                room,
-                len(data),
-                type(body).__name__,
-                body_len,
-            )
-
-        if t == T_PONG:
-            self._inc("pongs_in")
-            sess["awaiting_pong"] = None
-            return
-
-        if t == T_RESOURCE_ENVELOPE:
-            # Handle resource envelope announcement
-            if not self.config.enable_resource_transfer:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="resource transfer disabled",
-                        room=room,
-                    )
-                return
-            
-            if not isinstance(body, dict):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="invalid resource envelope body",
-                        room=room,
-                    )
-                return
-            
-            rid = body.get(B_RES_ID)
-            kind = body.get(B_RES_KIND)
-            size = body.get(B_RES_SIZE)
-            sha256 = body.get(B_RES_SHA256)
-            encoding = body.get(B_RES_ENCODING)
-            
-            # Validate required fields
-            if not isinstance(rid, (bytes, bytearray)):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="resource envelope missing id",
-                        room=room,
-                    )
-                return
-            
-            if not isinstance(kind, str) or not kind:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="resource envelope missing kind",
-                        room=room,
-                    )
-                return
-            
-            if not isinstance(size, int) or size < 0:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="resource envelope invalid size",
-                        room=room,
-                    )
-                return
-            
-            # Check size limit
-            if size > self.config.max_resource_bytes:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text=f"resource too large: {size} > {self.config.max_resource_bytes}",
-                        room=room,
-                    )
-                return
-            
-            # Validate optional fields
-            if sha256 is not None and not isinstance(sha256, (bytes, bytearray)):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="resource envelope invalid sha256",
-                        room=room,
-                    )
-                return
-            
-            if encoding is not None and not isinstance(encoding, str):
-                encoding = None
-            
-            # Add expectation
-            if not self._add_resource_expectation(
-                link,
-                rid=bytes(rid),
-                kind=kind,
-                size=size,
-                sha256=bytes(sha256) if sha256 else None,
-                encoding=encoding,
-                room=room,
-            ):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="too many pending resource expectations",
-                        room=room,
-                    )
-            return
-
-        if not sess["welcomed"]:
-            if t != T_HELLO:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing, link, src=self.identity.hash, text="send HELLO first"
-                    )
-                return
-
-            old_nick = sess.get("nick")
-            new_nick = None
-            
-            if isinstance(nick, str):
-                n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
-                if n is not None:
-                    new_nick = n
-                    sess["nick"] = n
-
-            if isinstance(body, dict):
-                sess["peer_caps"] = self._extract_caps(body)
-
-                # Back-compat: if a legacy client put nick in HELLO body, accept it.
-                if new_nick is None:
-                    legacy_nick = body.get(B_HELLO_NICK_LEGACY)
-                    n2 = normalize_nick(
-                        legacy_nick, max_chars=self.config.nick_max_chars
-                    )
-                    if n2 is not None:
-                        new_nick = n2
-                        sess["nick"] = n2
-            
-            # Update nick index if nick changed
-            if old_nick != new_nick:
-                self._update_nick_index(link, old_nick, new_nick)
-
-            self.log.info(
-                "HELLO peer=%s nick=%r link_id=%s",
-                self._fmt_hash(peer_hash),
-                sess.get("nick"),
-                self._fmt_link_id(link),
-            )
-
-            sess["welcomed"] = True
-            self._queue_welcome(
-                outgoing,
-                link,
-                peer_hash=peer_hash,
-                motd=self.config.greeting,
-            )
-            return
-
-        if t == T_HELLO:
-            # Allow re-authentication if client reconnects with same Link ID
-            # (can happen when client restarts but RNS reuses deterministic link_id)
-            if self.identity is not None:
-                # Reset session state and process as new HELLO
-                old_nick = sess.get("nick")
-                old_rooms = set(sess.get("rooms", set()))
-                sess["welcomed"] = False
-                sess["rooms"] = set()
-                sess["nick"] = None
-                sess["peer_caps"] = {}
-
-                # Remove this link from all room membership sets and prune empties.
-                for r in old_rooms:
-                    self.rooms.get(r, set()).discard(link)
-                    if r in self.rooms and not self.rooms[r]:
-                        self.rooms.pop(r, None)
-                        st = self._room_state_get(r)
-                        if st is not None and not st.get("registered"):
-                            self._room_state.pop(r, None)
-                
-                new_nick = None
-
-                # Process the HELLO message
-                if isinstance(nick, str):
-                    n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
-                    if n is not None:
-                        new_nick = n
-                        sess["nick"] = n
-
-                if isinstance(body, dict):
-                    sess["peer_caps"] = self._extract_caps(body)
-                    if new_nick is None:
-                        legacy_nick = body.get(B_HELLO_NICK_LEGACY)
-                        n2 = normalize_nick(
-                            legacy_nick, max_chars=self.config.nick_max_chars
-                        )
-                        if n2 is not None:
-                            new_nick = n2
-                            sess["nick"] = n2
-                
-                # Update nick index if nick changed
-                if old_nick != new_nick:
-                    self._update_nick_index(link, old_nick, new_nick)
-
-                self.log.info(
-                    "Re-HELLO peer=%s nick=%r link_id=%s",
-                    self._fmt_hash(peer_hash),
-                    sess.get("nick"),
-                    self._fmt_link_id(link),
-                )
-
-                sess["welcomed"] = True
-                self._queue_welcome(
-                    outgoing,
-                    link,
-                    peer_hash=peer_hash,
-                    motd=self.config.greeting,
-                )
-            return
-
-        if t == T_JOIN:
-            self._inc("joins")
-            if not isinstance(room, str) or not room:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="JOIN requires room name",
-                    )
-                return
-
-            if len(sess["rooms"]) >= int(self.config.max_rooms_per_session):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing, link, src=self.identity.hash, text="too many rooms"
-                    )
-                return
-
-            try:
-                r = self._norm_room(room)
-            except Exception as e:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing, link, src=self.identity.hash, text=str(e)
-                    )
-                return
-
-            # If room is registered, load its state now.
-            if r in self._room_registry:
-                self._room_state_ensure(r)
-
-            st = self._room_state_ensure(r)
-
-            # +i invite-only
-            if bool(st.get("invite_only", False)):
-                is_invited = self._is_invited(st, peer_hash)
-                if not self._is_room_op(r, peer_hash) and not is_invited:
-                    if self.identity is not None:
-                        self._emit_error(
-                            outgoing,
-                            link,
-                            src=self.identity.hash,
-                            text="invite-only (+i)",
-                            room=r,
-                        )
-                    return
-
-            # +k key/password (JOIN body must be the key string)
-            key = st.get("key")
-            if isinstance(key, str) and key:
-                is_invited = self._is_invited(st, peer_hash)
-                if not self._is_room_op(r, peer_hash) and not is_invited:
-                    provided = body if isinstance(body, str) else None
-                    if provided != key:
-                        if self.identity is not None:
-                            self._emit_error(
-                                outgoing,
-                                link,
-                                src=self.identity.hash,
-                                text="bad key (+k)",
-                                room=r,
-                            )
-                        return
-
-            # Room bans are room-local and apply to JOIN.
-            if self._is_room_banned(r, peer_hash):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="banned from room",
-                        room=r,
-                    )
-                return
-
-            # If the room doesn't exist yet (in-memory), the first joiner is the founder.
-            if r not in self.rooms:
-                self.rooms[r] = set()
-                self._room_state_ensure(r, founder=peer_hash)
-
-            sess["rooms"].add(r)
-            self.rooms.setdefault(r, set()).add(link)
-
-            self.log.info(
-                "JOIN peer=%s nick=%r room=%s link_id=%s",
-                self._fmt_hash(peer_hash),
-                sess.get("nick"),
-                r,
-                self._fmt_link_id(link),
-            )
-
-            self._touch_room(r)
-
-            joined_body = None
-            if self.config.include_joined_member_list:
-                members: list[bytes] = []
-                for member_link in self.rooms.get(r, set()):
-                    s = self.sessions.get(member_link)
-                    ph = s.get("peer") if s else None
-                    if isinstance(ph, (bytes, bytearray)):
-                        members.append(bytes(ph))
-                joined_body = members
-
-            joined = make_envelope(
-                T_JOINED, src=self.identity.hash, room=r, body=joined_body
-            )
-            self._queue_env(outgoing, link, joined)
-
-            # Consume invite on successful join.
-            try:
-                inv = st.get("invited")
-                if isinstance(inv, dict) and peer_hash in inv:
-                    inv.pop(peer_hash, None)
-                    if bool(st.get("registered")):
-                        self._persist_room_state_to_registry(link, r)
-            except Exception:
-                pass
-
-            try:
-                registered = bool(st.get("registered", False))
-                topic = st.get("topic") if isinstance(st.get("topic"), str) else None
-                mode_txt = self._room_mode_string(r)
-                topic_txt = topic if topic else "(none)"
-                reg_txt = "registered" if registered else "unregistered"
-                self._emit_notice(
-                    outgoing,
-                    link,
-                    r,
-                    f"room {r}: {reg_txt}; mode={mode_txt}; topic={topic_txt}",
-                )
-            except Exception:
-                pass
-            return
-
-        if t == T_PART:
-            self._inc("parts")
-            if not isinstance(room, str) or not room:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="PART requires room name",
-                    )
-                return
-
-            try:
-                r = self._norm_room(room)
-            except Exception as e:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing, link, src=self.identity.hash, text=str(e)
-                    )
-                return
-
-            sess["rooms"].discard(r)
-            if r in self.rooms:
-                self.rooms[r].discard(link)
-                if not self.rooms[r]:
-                    self.rooms.pop(r, None)
-                    st = self._room_state_get(r)
-                    if st is not None:
-                        self._touch_room(r)
-                        if st.get("registered"):
-                            self._persist_room_state_to_registry(link, r)
-                    if st is not None and not st.get("registered"):
-                        self._room_state.pop(r, None)
-
-            # Per spec: acknowledge PART with PARTED.
-            parted_body = None
-            if self.config.include_joined_member_list:
-                members: list[bytes] = []
-                for member_link in self.rooms.get(r, set()):
-                    s = self.sessions.get(member_link)
-                    ph = s.get("peer") if s else None
-                    if isinstance(ph, (bytes, bytearray)):
-                        members.append(bytes(ph))
-                parted_body = members
-
-            if self.identity is not None:
-                parted = make_envelope(
-                    T_PARTED, src=self.identity.hash, room=r, body=parted_body
-                )
-                self._queue_env(outgoing, link, parted)
-
-            self.log.info(
-                "PART peer=%s nick=%r room=%s link_id=%s",
-                self._fmt_hash(peer_hash),
-                sess.get("nick"),
-                r,
-                self._fmt_link_id(link),
-            )
-            return
-
-        if t in (T_MSG, T_NOTICE):
-            # Check for slash commands first, as they may not require a room.
-            # Per RRC spec, the room field is optional and may be empty.
-            if isinstance(body, str):
-                cmdline = body.strip()
-                if cmdline.startswith("/"):
-                    # It's a slash command - attempt to handle it
-                    if self.log.isEnabledFor(logging.DEBUG):
-                        self.log.debug(
-                            "Slash command peer=%s link_id=%s cmd=%r room=%r",
-                            self._fmt_hash(peer_hash),
-                            self._fmt_link_id(link),
-                            cmdline,
-                            room,
-                        )
-                    handled = self._handle_operator_command(
-                        link, peer_hash=peer_hash, room=room, text=body, outgoing=outgoing
-                    )
-                    if handled:
-                        if self.log.isEnabledFor(logging.DEBUG):
-                            self.log.debug(
-                                "Slash command handled, queued=%d responses",
-                                len(outgoing),
-                            )
-                        return
-                    # Unrecognized slash command - send error
-                    if self.identity is not None:
-                        self._emit_error(
-                            outgoing,
-                            link,
-                            src=self.identity.hash,
-                            text="unrecognized command",
-                            room=room,
-                        )
-                    return
-
-            # NOTICE messages are informational/non-conversational and don't require a room.
-            # MSG messages require a room for delivery.
-            if t == T_MSG:
-                if not isinstance(room, str) or not room:
-                    if self.identity is not None:
-                        self._emit_error(
-                            outgoing,
-                            link,
-                            src=self.identity.hash,
-                            text="message requires room name",
-                        )
-                    return
-            elif t == T_NOTICE:
-                # NOTICE without a room is allowed - just don't forward it anywhere
-                if not isinstance(room, str) or not room:
-                    return
-
-            try:
-                r = self._norm_room(room)
-            except Exception as e:
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing, link, src=self.identity.hash, text=str(e)
-                    )
-                return
-
-            if r not in sess["rooms"]:
-                # +n (no outside messages): when enabled, require membership.
-                # When disabled (-n), allow sending to existing/registered rooms.
-                st = None
-                if r in self._room_registry:
-                    st = self._room_state_ensure(r)
-                elif r in self.rooms:
-                    st = self._room_state_ensure(r)
-
-                if st is None:
-                    if self.identity is not None:
-                        self._emit_error(
-                            outgoing,
-                            link,
-                            src=self.identity.hash,
-                            text="no such room",
-                            room=r,
-                        )
-                    return
-
-                if bool(st.get("no_outside_msgs", False)):
-                    if self.identity is not None:
-                        self._emit_error(
-                            outgoing,
-                            link,
-                            src=self.identity.hash,
-                            text="no outside messages (+n)",
-                            room=r,
-                        )
-                    return
-
-            # Per-room moderation: bans and moderated mode.
-            if self._is_room_banned(r, peer_hash):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="banned from room",
-                        room=r,
-                    )
-                return
-            if self._room_moderated(r) and not self._is_room_voiced(r, peer_hash):
-                if self.identity is not None:
-                    self._emit_error(
-                        outgoing,
-                        link,
-                        src=self.identity.hash,
-                        text="room is moderated (+m)",
-                        room=r,
-                    )
-                return
-
-            if peer_hash is not None:
-                env[K_SRC] = (
-                    bytes(peer_hash)
-                    if isinstance(peer_hash, (bytes, bytearray))
-                    else peer_hash
-                )
-            env[K_ROOM] = r
-
-            # Preserve the nickname from the incoming envelope if present.
-            # Fall back to session nickname (from HELLO) if client didn't provide one.
-            # This allows clients to update their nickname mid-session.
-            incoming_nick = env.get(K_NICK)
-            if incoming_nick is not None:
-                # Client provided a nickname in this message - validate and preserve it
-                n = normalize_nick(incoming_nick, max_chars=self.config.nick_max_chars)
-                if n is not None:
-                    # Update session nick and index if it changed
-                    old_session_nick = sess.get("nick")
-                    if old_session_nick != n:
-                        sess["nick"] = n
-                        self._update_nick_index(link, old_session_nick, n)
-                    env[K_NICK] = n
-                else:
-                    # Invalid nickname provided - remove it
-                    env.pop(K_NICK, None)
-            else:
-                # No nickname in message - use session nickname from HELLO if available
-                nick = sess.get("nick")
-                n = normalize_nick(nick, max_chars=self.config.nick_max_chars)
-                if n is not None:
-                    env[K_NICK] = n
-
-            payload = encode(env)
-            for other in list(self.rooms.get(r, set())):
-                self._queue_payload(outgoing, other, payload)
-
-            if self.log.isEnabledFor(logging.DEBUG):
-                self.log.debug(
-                    "Forwarded t=%s peer=%s nick=%r room=%s recipients=%s body_type=%s",
-                    t,
-                    self._fmt_hash(peer_hash),
-                    sess.get("nick"),
-                    r,
-                    len(self.rooms.get(r, set())),
-                    type(body).__name__,
-                )
-
-            if t == T_MSG:
-                self._inc("msgs_forwarded")
-            else:
-                self._inc("notices_forwarded")
-            return
-
-        if t == T_PING:
-            self._inc("pings_in")
-            if self.identity is not None:
-                pong = make_envelope(T_PONG, src=self.identity.hash, body=body)
-                self._inc("pongs_out")
-                self._queue_env(outgoing, link, pong)
-            return
-
-        return
+        """
+        Handle incoming packet with state lock held.
+        
+        Delegates to MessageRouter for message routing and dispatching.
+        """
+        self.router.route_packet(link, data, outgoing)
 
     def _ping_loop(self) -> None:
         while not self._shutdown.is_set():
