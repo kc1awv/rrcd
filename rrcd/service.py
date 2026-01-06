@@ -91,6 +91,8 @@ class HubService:
         # Resource transfer state
         self._resource_expectations: dict[RNS.Link, dict[bytes, _ResourceExpectation]] = {}
         self._active_resources: dict[RNS.Link, set[RNS.Resource]] = {}
+        # Tracks which expectation RID was matched to an advertised Resource.
+        self._resource_bindings: dict[RNS.Resource, bytes] = {}
 
         self._trusted: set[bytes] = set()
         self._banned: set[bytes] = set()
@@ -386,6 +388,45 @@ class HubService:
         
         return None
 
+    def _get_resource_expectation_by_rid(
+        self, link: RNS.Link, rid: bytes
+    ) -> _ResourceExpectation | None:
+        """Lookup an expectation by RID without removing it."""
+        exp_dict = self._resource_expectations.get(link)
+        if not exp_dict:
+            return None
+        return exp_dict.get(rid)
+
+    def _match_resource_expectation(
+        self, link: RNS.Link, *, rid: bytes | None, size: int, sha256: bytes | None
+    ) -> _ResourceExpectation | None:
+        """Find the expectation that should satisfy a completed resource.
+
+        Preference order:
+        1) Bound RID (from advertisement) when available.
+        2) Exact RID lookup.
+        3) Fallback: first size match whose sha256 (if present) matches.
+        """
+        self._cleanup_expired_expectations(link)
+
+        if rid is not None:
+            exp = self._get_resource_expectation_by_rid(link, rid)
+            if exp is not None:
+                return exp
+
+        exp_dict = self._resource_expectations.get(link)
+        if not exp_dict:
+            return None
+
+        # Avoid linear scan if nothing matches by size.
+        for exp in exp_dict.values():
+            if exp.size != size:
+                continue
+            if exp.sha256 and sha256 and exp.sha256 != sha256:
+                continue
+            return exp
+        return None
+
     def _pop_resource_expectation(
         self, link: RNS.Link, rid: bytes
     ) -> _ResourceExpectation | None:
@@ -459,6 +500,9 @@ class HubService:
         
         with self._state_lock:
             self._active_resources.setdefault(link, set()).add(resource)
+            # Remember which expectation RID this resource was matched to so the
+            # conclusion handler can verify and pop the correct entry.
+            self._resource_bindings[resource] = exp.id
         
         return True
 
@@ -467,78 +511,79 @@ class HubService:
         link = resource.link
         
         with self._state_lock:
-            # Remove from active set
+            # Remove from active set and retrieve any bound expectation RID.
             active_set = self._active_resources.get(link)
             if active_set:
                 active_set.discard(resource)
-            
-            if resource.status != RNS.Resource.COMPLETE:
-                self.log.warning(
-                    "Resource transfer failed link_id=%s status=%s",
-                    self._fmt_link_id(link),
-                    resource.status,
-                )
-                return
-            
-            # Get payload
-            try:
-                payload = resource.data.read() if hasattr(resource.data, "read") else resource.data
-                if isinstance(payload, bytearray):
-                    payload = bytes(payload)
-            except Exception as e:
-                self.log.error(
-                    "Failed to read resource data link_id=%s: %s",
-                    self._fmt_link_id(link),
-                    e,
-                )
-                return
-            
-            size = len(payload)
-            
-            # Find and remove expectation
-            exp = self._find_resource_expectation(link, size)
-            if not exp:
-                self.log.warning(
-                    "Received resource without expectation link_id=%s size=%s",
-                    self._fmt_link_id(link),
-                    size,
-                )
-                return
-            
-            self._pop_resource_expectation(link, exp.id)
-            
-            # Verify SHA256 if provided
-            if exp.sha256:
-                actual_hash = hashlib.sha256(payload).digest()
-                if actual_hash != exp.sha256:
-                    self.log.error(
-                        "Resource SHA256 mismatch link_id=%s expected=%s actual=%s",
-                        self._fmt_link_id(link),
-                        exp.sha256.hex(),
-                        actual_hash.hex(),
-                    )
-                    return
-            
-            self._inc("resources_received")
-            self._inc("resource_bytes_received", size)
-            
-            self.log.info(
-                "Resource received link_id=%s size=%s kind=%s",
+            bound_rid = self._resource_bindings.pop(resource, None)
+
+        if resource.status != RNS.Resource.COMPLETE:
+            self.log.warning(
+                "Resource transfer failed link_id=%s status=%s",
+                self._fmt_link_id(link),
+                resource.status,
+            )
+            return
+
+        # Get payload outside the lock.
+        try:
+            payload = resource.data.read() if hasattr(resource.data, "read") else resource.data
+            if isinstance(payload, bytearray):
+                payload = bytes(payload)
+        except Exception as e:
+            self.log.error(
+                "Failed to read resource data link_id=%s: %s",
+                self._fmt_link_id(link),
+                e,
+            )
+            return
+
+        size = len(payload)
+        actual_hash = hashlib.sha256(payload).digest()
+
+        # Find expectation using bound RID first, then RID lookup, then size/sha fallback.
+        exp = self._match_resource_expectation(link, rid=bound_rid, size=size, sha256=actual_hash)
+        if not exp:
+            self.log.warning(
+                "Received resource without expectation link_id=%s size=%s",
                 self._fmt_link_id(link),
                 size,
-                exp.kind,
             )
-            
-            # Dispatch by kind
-            try:
-                self._dispatch_received_resource(link, exp, payload)
-            except Exception as e:
-                self.log.exception(
-                    "Failed to dispatch resource link_id=%s kind=%s: %s",
-                    self._fmt_link_id(link),
-                    exp.kind,
-                    e,
-                )
+            return
+
+        # Verify SHA256 if provided; keep expectation if mismatch so sender can retry.
+        if exp.sha256 and actual_hash != exp.sha256:
+            self.log.error(
+                "Resource SHA256 mismatch link_id=%s expected=%s actual=%s",
+                self._fmt_link_id(link),
+                exp.sha256.hex(),
+                actual_hash.hex(),
+            )
+            return
+
+        # Pop expectation only after validation succeeds.
+        self._pop_resource_expectation(link, exp.id)
+
+        self._inc("resources_received")
+        self._inc("resource_bytes_received", size)
+        
+        self.log.info(
+            "Resource received link_id=%s size=%s kind=%s",
+            self._fmt_link_id(link),
+            size,
+            exp.kind,
+        )
+        
+        # Dispatch by kind
+        try:
+            self._dispatch_received_resource(link, exp, payload)
+        except Exception as e:
+            self.log.exception(
+                "Failed to dispatch resource link_id=%s kind=%s: %s",
+                self._fmt_link_id(link),
+                exp.kind,
+                e,
+            )
 
     def _dispatch_received_resource(
         self, link: RNS.Link, exp: _ResourceExpectation, payload: bytes
@@ -3648,10 +3693,20 @@ class HubService:
             if self.identity is not None:
                 # Reset session state and process as new HELLO
                 old_nick = sess.get("nick")
+                old_rooms = set(sess.get("rooms", set()))
                 sess["welcomed"] = False
                 sess["rooms"] = set()
                 sess["nick"] = None
                 sess["peer_caps"] = {}
+
+                # Remove this link from all room membership sets and prune empties.
+                for r in old_rooms:
+                    self.rooms.get(r, set()).discard(link)
+                    if r in self.rooms and not self.rooms[r]:
+                        self.rooms.pop(r, None)
+                        st = self._room_state_get(r)
+                        if st is not None and not st.get("registered"):
+                            self._room_state.pop(r, None)
                 
                 new_nick = None
 
