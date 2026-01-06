@@ -1862,6 +1862,18 @@ class HubService:
             for room in rooms_to_prune:
                 self.log.info("Pruned unused registered room %s", room)
 
+    def _resource_cleanup_loop(self) -> None:
+        """Periodically cleanup expired resource expectations."""
+        while not self._shutdown.is_set():
+            # Run cleanup every 30 seconds
+            time.sleep(30.0)
+            if self._shutdown.is_set():
+                break
+            try:
+                self._cleanup_all_expired_expectations()
+            except Exception:
+                self.log.exception("Resource cleanup failed")
+
     def _config_path_for_writes(self) -> str | None:
         p = self.config.config_path
         if not p:
