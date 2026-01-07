@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from dataclasses import asdict, replace
+from pathlib import Path
 
 import RNS
 
@@ -77,11 +78,11 @@ def _apply_config_file(cfg: HubRuntimeConfig, path: str) -> HubRuntimeConfig:
 def _write_default_config(config_path: str, identity_path: str) -> None:
     cfg_dir = os.path.dirname(config_path)
     if cfg_dir:
-        ensure_private_dir(__import__("pathlib").Path(cfg_dir))
+        ensure_private_dir(Path(cfg_dir))
 
     storage_dir = os.path.dirname(identity_path)
     if storage_dir:
-        ensure_private_dir(__import__("pathlib").Path(storage_dir))
+        ensure_private_dir(Path(storage_dir))
 
     room_registry_path = str(default_room_registry_path())
 
@@ -208,7 +209,7 @@ def _ensure_first_run_files(
     if not os.path.exists(identity_path):
         storage_dir = os.path.dirname(identity_path)
         if storage_dir:
-            ensure_private_dir(__import__("pathlib").Path(storage_dir))
+            ensure_private_dir(Path(storage_dir))
         ident = RNS.Identity()
         ident.to_file(identity_path)
         try:
@@ -220,7 +221,7 @@ def _ensure_first_run_files(
     if room_registry_path and not os.path.exists(room_registry_path):
         storage_dir = os.path.dirname(room_registry_path)
         if storage_dir:
-            ensure_private_dir(__import__("pathlib").Path(storage_dir))
+            ensure_private_dir(Path(storage_dir))
         content = """# rrcd room registry (TOML)
 #
 # This file stores registered rooms and their moderation state.
@@ -382,8 +383,14 @@ def main(argv: list[str] | None = None) -> None:
     cfg = replace(cfg, config_path=config_path)
     cfg = replace(cfg, room_registry_path=room_registry_path)
 
+    # Use ConfigManager to load config file
     if config_path:
-        cfg = _apply_config_file(cfg, config_path)
+        from .config import ConfigManager
+        # Create temporary manager for loading
+        temp_hub = type('obj', (object,), {'config': cfg, 'log': None, '_state_lock': None})()
+        temp_mgr = ConfigManager(temp_hub)  # type: ignore
+        data = temp_mgr.load_toml(config_path)
+        cfg = temp_mgr.apply_config_data(cfg, data)
 
     if args.dest_name is not None:
         cfg = replace(cfg, dest_name=args.dest_name)

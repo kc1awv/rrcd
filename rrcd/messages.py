@@ -13,6 +13,9 @@ from .envelope import make_envelope
 if TYPE_CHECKING:
     from .service import HubService
 
+# Maximum characters per NOTICE chunk for MTU-safe delivery
+MAX_NOTICE_CHUNK_CHARS = 512
+
 
 class MessageHelper:
     """
@@ -75,7 +78,7 @@ class MessageHelper:
             if not remaining:
                 continue
 
-            max_chars = min(len(remaining), 512)
+            max_chars = min(len(remaining), MAX_NOTICE_CHUNK_CHARS)
             while remaining:
                 take = min(len(remaining), max_chars)
                 chunk = remaining[:take]
@@ -89,7 +92,7 @@ class MessageHelper:
                 if self.packet_would_fit(link, payload):
                     self.queue_payload(outgoing, link, payload)
                     remaining = remaining[take:]
-                    max_chars = min(max_chars, 512)
+                    max_chars = min(max_chars, MAX_NOTICE_CHUNK_CHARS)
                     continue
 
                 if max_chars <= 1:
