@@ -650,7 +650,7 @@ class MessageRouter:
                         cmdline,
                         room,
                     )
-                handled = self.hub._handle_operator_command(
+                handled = self.hub.command_handler.handle_operator_command(
                     link, peer_hash=peer_hash, room=room, text=body, outgoing=outgoing
                 )
                 if handled:
