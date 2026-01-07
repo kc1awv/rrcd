@@ -2,6 +2,25 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.2.0 - 2026-01-07
+
+- **Major internal refactoring**: Improved code organization and maintainability
+- Extracted modular components from monolithic service class:
+  - `SessionManager`: Centralized session lifecycle and state management
+  - `MessageRouter`: Message routing and forwarding logic
+  - `CommandHandler`: Slash-command parsing and execution
+  - `RoomManager`: Room state, membership, and mode management
+  - `ResourceManager`: RNS.Resource transfer handling and coordination
+  - `TrustManager`: Operator and ban list management
+  - `StatsManager`: Statistics tracking and reporting
+  - `ConfigManager`: Enhanced configuration loading and validation
+- Moved message chunking and encoding logic to dedicated `messages` module
+- Consolidated constants and improved code organization
+- Reduced service.py from ~4000 lines to <600 lines by delegating to specialized managers
+- No breaking changes to protocol, configuration format, or user-facing behavior
+
+Future development will focus on testing, feature enhancements, and optimizations rather than large structural changes.
+
 ## 0.1.3 - 2026-01-05
 
 - Added `/list` command to discover registered public rooms with their topics (available to all users)
