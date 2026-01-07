@@ -258,7 +258,7 @@ class MessageRouter:
             encoding = None
 
         # Add expectation
-        if not self.hub._add_resource_expectation(
+        if not self.hub.resource_manager.add_resource_expectation(
             link,
             rid=bytes(rid),
             kind=kind,
