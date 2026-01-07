@@ -79,14 +79,14 @@ class CommandHandler:
             # List all registered, non-private rooms with their topics
             with self.hub._state_lock:
                 registered_rooms = []
-                for room_name, st in self.hub._room_state.items():
+                for room_name, st in self.hub.room_manager._room_state.items():
                     if st.get("registered") and not st.get("private"):
                         topic = st.get("topic")
                         registered_rooms.append((room_name, topic))
                 
                 # Also check room registry for rooms not currently in room_state
-                for room_name, reg in self.hub._room_registry.items():
-                    if room_name not in self.hub._room_state:
+                for room_name, reg in self.hub.room_manager._room_registry.items():
+                    if room_name not in self.hub.room_manager._room_state:
                         if not reg.get("private"):
                             topic = reg.get("topic")
                             registered_rooms.append((room_name, topic))
@@ -123,14 +123,14 @@ class CommandHandler:
                 return True
 
             # Check if room is private - only server operators can see private rooms
-            st = self.hub._room_state_get(r)
+            st = self.hub.room_manager._room_state_get(r)
             if st and st.get("private"):
                 if not self.hub._is_server_op(peer_hash):
                     self._emit_notice(outgoing, link, None, f"room {r} is private")
                     return True
 
             members = []
-            for other in sorted(self.hub.rooms.get(r, set()), key=lambda x: id(x)):
+            for other in sorted(self.hub.room_manager.get_room_members(r), key=lambda x: id(x)):
                 s = self.hub.session_manager.sessions.get(other)
                 if not s:
                     continue
@@ -164,7 +164,7 @@ class CommandHandler:
                 self._emit_notice(outgoing, link, room, f"bad room: {e}")
                 return True
 
-            if not self.hub._is_room_op(r, peer_hash):
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -190,10 +190,10 @@ class CommandHandler:
                 return True
 
             tsess["rooms"].discard(r)
-            if r in self.hub.rooms:
-                self.hub.rooms[r].discard(target_link)
-                if not self.hub.rooms[r]:
-                    self.hub.rooms.pop(r, None)
+            if self.hub.room_manager.get_room_members(r):
+                self.hub.room_manager.rooms[r].discard(target_link)
+                if not self.hub.room_manager.rooms[r]:
+                    pass  # room cleanup handled by room_manager
 
             if self.hub.identity is not None:
                 self._emit_error(
@@ -327,11 +327,11 @@ class CommandHandler:
                 )
                 return True
 
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
 
             # Clean up expired invites (best-effort).
-            if self.hub._prune_expired_invites(st) and bool(st.get("registered")):
-                self.hub._persist_room_state_to_registry(link, r)
+            if self.hub.room_manager.prune_expired_invites(r) and bool(st.get("registered")):
+                self.hub.room_manager.persist_room_state(link, r)
             founder = st.get("founder")
             if not (
                 isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash
@@ -346,7 +346,7 @@ class CommandHandler:
                     )
                 return True
 
-            if not self.hub._room_registry_path_for_writes():
+            if not self.hub.room_manager.get_registry_path_for_writes():
                 self._emit_notice(
                     outgoing, link, room, "cannot register room: no room_registry_path"
                 )
@@ -357,10 +357,10 @@ class CommandHandler:
             st["topic_ops_only"] = True
             if isinstance(founder, (bytes, bytearray)):
                 st.setdefault("ops", set()).add(bytes(founder))
-            self.hub._touch_room(r)
+            self.hub.room_manager.touch_room(r)
 
             # Ensure registry mirrors registered rooms.
-            self.hub._room_registry[r] = {
+            self.hub.room_manager._room_registry[r] = {
                 "founder": bytes(founder)
                 if isinstance(founder, (bytes, bytearray))
                 else None,
@@ -379,7 +379,7 @@ class CommandHandler:
                 "last_used_ts": st.get("last_used_ts"),
             }
 
-            self.hub._persist_room_state_to_registry(link, r)
+            self.hub.room_manager.persist_room_state(link, r)
             self._emit_notice(outgoing, link, room, f"registered room {r}")
             return True
 
@@ -403,7 +403,7 @@ class CommandHandler:
                 )
                 return True
 
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
             founder = st.get("founder")
             if not (
                 isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash
@@ -423,11 +423,11 @@ class CommandHandler:
                 return True
 
             st["registered"] = False
-            self.hub._room_registry.pop(r, None)
+            self.hub.room_manager._room_registry.pop(r, None)
             self.hub._delete_room_from_registry(link, r)
             # Drop state if empty.
-            if r not in self.hub.rooms or not self.hub.rooms.get(r):
-                self.hub._room_state.pop(r, None)
+            if not self.hub.room_manager.get_room_members(r) or not self.hub.room_manager.get_room_members(r):
+                self.hub.room_manager._room_state.pop(r, None)
             self._emit_notice(outgoing, link, room, f"unregistered room {r}")
             return True
 
@@ -440,7 +440,7 @@ class CommandHandler:
             except Exception as e:
                 self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
             if len(parts) == 2:
                 topic = st.get("topic")
                 self._emit_notice(
@@ -451,8 +451,8 @@ class CommandHandler:
                 )
                 return True
 
-            if not self.hub._is_room_op(r, peer_hash):
-                st = self.hub._room_state_ensure(r)
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
+                st = self.hub.room_manager._room_state_ensure(r)
                 if bool(st.get("topic_ops_only", False)):
                     if self.hub.identity is not None:
                         self._emit_error(
@@ -466,10 +466,10 @@ class CommandHandler:
 
             topic = " ".join(parts[2:]).strip()
             st["topic"] = topic if topic else None
-            self.hub._touch_room(r)
-            self.hub._persist_room_state_to_registry(link, r)
+            self.hub.room_manager.touch_room(r)
+            self.hub.room_manager.persist_room_state(link, r)
             # Broadcast topic change to current members.
-            for other in list(self.hub.rooms.get(r, set())):
+            for other in list(self.hub.room_manager.get_room_members(r)):
                 self._emit_notice(
                     outgoing,
                     other,
@@ -489,7 +489,7 @@ class CommandHandler:
             except Exception as e:
                 self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
-            if not self.hub._is_room_op(r, peer_hash):
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -507,7 +507,7 @@ class CommandHandler:
                 )
                 return True
             
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
             founder = st.get("founder")
             founder_b = (
                 bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
@@ -520,8 +520,8 @@ class CommandHandler:
                     st["ops"] = ops
                 if cmd == "op":
                     ops.add(target_hash)
-                    self.hub._touch_room(r)
-                    self.hub._persist_room_state_to_registry(link, r)
+                    self.hub.room_manager.touch_room(r)
+                    self.hub.room_manager.persist_room_state(link, r)
                     self._emit_notice(outgoing, link, room, f"op granted in {r}")
                     return True
                 else:
@@ -529,8 +529,8 @@ class CommandHandler:
                         self._emit_notice(outgoing, link, room, "cannot deop founder")
                         return True
                     ops.discard(target_hash)
-                    self.hub._touch_room(r)
-                    self.hub._persist_room_state_to_registry(link, r)
+                    self.hub.room_manager.touch_room(r)
+                    self.hub.room_manager.persist_room_state(link, r)
                     self._emit_notice(outgoing, link, room, f"op removed in {r}")
                     return True
 
@@ -540,14 +540,14 @@ class CommandHandler:
                 st["voiced"] = voiced
             if cmd == "voice":
                 voiced.add(target_hash)
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
                 self._emit_notice(outgoing, link, room, f"voice granted in {r}")
                 return True
             else:
                 voiced.discard(target_hash)
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
                 self._emit_notice(outgoing, link, room, f"voice removed in {r}")
                 return True
 
@@ -565,7 +565,7 @@ class CommandHandler:
             except Exception as e:
                 self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
-            if not self.hub._is_room_op(r, peer_hash):
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -576,41 +576,41 @@ class CommandHandler:
                     )
                 return True
             flag = parts[2].strip().lower()
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
 
             if flag in ("+m", "-m"):
                 st["moderated"] = flag == "+m"
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+i", "-i"):
                 st["invite_only"] = flag == "+i"
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+t", "-t"):
                 st["topic_ops_only"] = flag == "+t"
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+n", "-n"):
                 st["no_outside_msgs"] = flag == "+n"
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+p", "-p"):
                 st["private"] = flag == "+p"
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+k", "-k"):
@@ -627,9 +627,9 @@ class CommandHandler:
                     st["key"] = key
                 else:
                     st["key"] = None
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                self.hub._broadcast_room_mode(r, outgoing)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                self.hub.room_manager.broadcast_room_mode(r, outgoing)
                 return True
 
             if flag in ("+r", "-r"):
@@ -676,9 +676,9 @@ class CommandHandler:
                             return True
                         ops.discard(target_hash)
 
-                    self.hub._touch_room(r)
-                    self.hub._persist_room_state_to_registry(link, r)
-                    for other in list(self.hub.rooms.get(r, set())):
+                    self.hub.room_manager.touch_room(r)
+                    self.hub.room_manager.persist_room_state(link, r)
+                    for other in list(self.hub.room_manager.get_room_members(r)):
                         self._emit_notice(
                             outgoing,
                             other,
@@ -696,9 +696,9 @@ class CommandHandler:
                 else:
                     voiced.discard(target_hash)
 
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
-                for other in list(self.hub.rooms.get(r, set())):
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
+                for other in list(self.hub.room_manager.get_room_members(r)):
                     self._emit_notice(
                         outgoing,
                         other,
@@ -733,7 +733,7 @@ class CommandHandler:
 
             op = parts[2].strip().lower()
             if op == "list":
-                st = self.hub._room_state_ensure(r)
+                st = self.hub.room_manager._room_state_ensure(r)
                 bans = st.get("bans")
                 if not isinstance(bans, set) or not bans:
                     self._emit_notice(outgoing, link, room, f"no bans in {r}")
@@ -761,7 +761,7 @@ class CommandHandler:
                 )
                 return True
 
-            if not self.hub._is_room_op(r, peer_hash):
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -779,7 +779,7 @@ class CommandHandler:
                 )
                 return True
 
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
             bans = st.setdefault("bans", set())
             if not isinstance(bans, set):
                 bans = set()
@@ -787,16 +787,16 @@ class CommandHandler:
 
             if op == "add":
                 bans.add(target_hash)
-                self.hub._touch_room(r)
-                self.hub._persist_room_state_to_registry(link, r)
+                self.hub.room_manager.touch_room(r)
+                self.hub.room_manager.persist_room_state(link, r)
 
                 # If currently present in room, remove them.
-                for other in list(self.hub.rooms.get(r, set())):
+                for other in list(self.hub.room_manager.get_room_members(r)):
                     s = self.hub.session_manager.sessions.get(other)
                     ph = s.get("peer") if s else None
                     if isinstance(ph, (bytes, bytearray)) and bytes(ph) == target_hash:
                         s.get("rooms", set()).discard(r)
-                        self.hub.rooms.get(r, set()).discard(other)
+                        self.hub.room_manager.get_room_members(r).discard(other)
                         if self.hub.identity is not None:
                             self._emit_error(
                                 outgoing,
@@ -805,14 +805,14 @@ class CommandHandler:
                                 text=f"banned from {r}",
                                 room=r,
                             )
-                if r in self.hub.rooms and not self.hub.rooms[r]:
-                    self.hub.rooms.pop(r, None)
+                if self.hub.room_manager.get_room_members(r) and not self.hub.room_manager.rooms[r]:
+                    pass  # room cleanup handled by room_manager
                 self._emit_notice(outgoing, link, room, f"ban added in {r}")
                 return True
 
             bans.discard(target_hash)
-            self.hub._touch_room(r)
-            self.hub._persist_room_state_to_registry(link, r)
+            self.hub.room_manager.touch_room(r)
+            self.hub.room_manager.persist_room_state(link, r)
             self._emit_notice(outgoing, link, room, f"ban removed in {r}")
             return True
 
@@ -832,7 +832,7 @@ class CommandHandler:
                 self._emit_notice(outgoing, link, None, f"bad room: {e}")
                 return True
 
-            if not self.hub._is_room_op(r, peer_hash):
+            if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -844,7 +844,7 @@ class CommandHandler:
                 return True
 
             op = parts[2].strip().lower()
-            st = self.hub._room_state_ensure(r)
+            st = self.hub.room_manager._room_state_ensure(r)
 
             invited = st.setdefault("invited", {})
             if not isinstance(invited, dict):
@@ -852,7 +852,7 @@ class CommandHandler:
                 st["invited"] = invited
 
             # Drop expired entries before operating.
-            pruned = self.hub._prune_expired_invites(st)
+            pruned = self.hub.room_manager.prune_expired_invites(r)
 
             if op == "list":
                 now = float(time.time())
@@ -869,8 +869,8 @@ class CommandHandler:
                     items.append(f"{bytes(h).hex()} expires_in={int(exp_f - now)}s")
                 items.sort()
                 if pruned:
-                    self.hub._touch_room(r)
-                    self.hub._persist_room_state_to_registry(link, r)
+                    self.hub.room_manager.touch_room(r)
+                    self.hub.room_manager.persist_room_state(link, r)
                 self._emit_notice(
                     outgoing,
                     link,
@@ -955,8 +955,8 @@ class CommandHandler:
                         ttl = 900.0
                     exp = float(time.time()) + ttl
                     invited[target_hash] = exp
-                    self.hub._touch_room(r)
-                    self.hub._persist_room_state_to_registry(link, r)
+                    self.hub.room_manager.touch_room(r)
+                    self.hub.room_manager.persist_room_state(link, r)
                     self._emit_notice(
                         outgoing,
                         link,
@@ -978,8 +978,8 @@ class CommandHandler:
 
             if target_hash in invited:
                 invited.pop(target_hash, None)
-            self.hub._touch_room(r)
-            self.hub._persist_room_state_to_registry(link, r)
+            self.hub.room_manager.touch_room(r)
+            self.hub.room_manager.persist_room_state(link, r)
             self._emit_notice(outgoing, link, room, f"invite removed in {r}")
             return True
 

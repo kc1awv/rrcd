@@ -27,7 +27,8 @@ from .constants import (
 from .envelope import make_envelope
 from .logging_config import configure_logging
 from .resources import ResourceManager
-from .router import MessageRouter
+from .rooms import RoomManager
+from .router import MessageRouter, OutgoingList
 from .session import SessionManager
 from .util import expand_path
 
@@ -55,22 +56,17 @@ class HubService:
         
         # Resource manager for file/data transfers
         self.resource_manager = ResourceManager(self)
+        
+        # Room manager for room memberships and permissions
+        self.room_manager = RoomManager(self)
 
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
 
-        self.rooms: dict[str, set[RNS.Link]] = {}
 
         self._trusted: set[bytes] = set()
         self._banned: set[bytes] = set()
 
-        # Room state (hub-local conventions; no new on-wire message types).
-        # _room_state holds active in-memory state (and registered state for empty rooms).
-        # _room_registry holds registered rooms loaded from config.
-        self._room_state: dict[str, dict[str, Any]] = {}
-        self._room_registry: dict[str, dict[str, Any]] = {}
-
-        self._room_registry_write_lock = threading.Lock()
         self._prune_thread: threading.Thread | None = None
 
         self._ping_thread: threading.Thread | None = None
@@ -221,12 +217,6 @@ class HubService:
             self._fmt_link_id(link),
         )
 
-        # The hub MOTD (message of the day) is delivered after WELCOME.
-        if g:
-            self._send_text_smart(
-                link, msg_type=T_NOTICE, text=g, room=None, outgoing=outgoing, kind=RES_KIND_MOTD
-            )
-
     def _inc(self, key: str, delta: int = 1) -> None:
         try:
             with self._state_lock:
@@ -267,21 +257,51 @@ class HubService:
         
         # If it fits, send normally
         if self._packet_would_fit(link, payload):
+            self.log.debug(
+                "Text fits in packet link_id=%s bytes=%s",
+                self._fmt_link_id(link),
+                len(payload),
+            )
             if outgoing is None:
                 self._send(link, env)
             else:
                 self._queue_env(outgoing, link, env)
             return
         
+        self.log.debug(
+            "Text too large for packet link_id=%s bytes=%s mtu_check_failed=True",
+            self._fmt_link_id(link),
+            len(payload),
+        )
+        
         # Too large for packet - try resource if enabled and type is NOTICE
-        if (
+        # Only use resources when NOT batching (outgoing=None), since resource
+        # creation happens immediately and would race with queued packets.
+        text_bytes = text.encode(encoding)
+        can_use_resource = (
             self.config.enable_resource_transfer
             and msg_type == T_NOTICE
-            and len(text.encode(encoding)) <= self.config.max_resource_bytes
-        ):
-            text_bytes = text.encode(encoding)
+            and outgoing is None
+            and len(text_bytes) <= self.config.max_resource_bytes
+        )
+        
+        self.log.debug(
+            "Resource check: enabled=%s type_is_notice=%s not_batching=%s size_ok=%s/%s",
+            self.config.enable_resource_transfer,
+            msg_type == T_NOTICE,
+            outgoing is None,
+            len(text_bytes),
+            self.config.max_resource_bytes,
+        )
+        
+        if can_use_resource:
+            self.log.debug(
+                "Attempting to send via resource link_id=%s kind=%s",
+                self._fmt_link_id(link),
+                kind if kind is not None else RES_KIND_NOTICE,
+            )
             resource_kind = kind if kind is not None else RES_KIND_NOTICE
-            if self._send_via_resource(
+            if self.resource_manager.send_via_resource(
                 link,
                 kind=resource_kind,
                 payload=text_bytes,
@@ -295,9 +315,19 @@ class HubService:
                     len(text),
                 )
                 return
+            else:
+                self.log.warning(
+                    "Resource send failed, falling back to chunks link_id=%s",
+                    self._fmt_link_id(link),
+                )
         
         # Fall back to chunking for NOTICE
         if msg_type == T_NOTICE:
+            self.log.debug(
+                "Falling back to chunking link_id=%s outgoing_is_none=%s",
+                self._fmt_link_id(link),
+                outgoing is None,
+            )
             if outgoing is None:
                 outgoing = []
                 self._queue_notice_chunks(outgoing, link, room=room, text=text)
@@ -444,7 +474,7 @@ class HubService:
 
         with self._state_lock:
             links = self.session_manager.clear_all()
-            self.rooms.clear()
+            self.room_manager.clear_all()
             self.resource_manager.clear_all()
 
         for link in links:
@@ -562,219 +592,6 @@ class HubService:
             )
         return changed
 
-    def _load_room_registry_from_path(
-        self,
-        reg_path: str,
-        *,
-        invite_timeout_s: float | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], str | None]:
-        if not reg_path:
-            return {}, "room_registry_path is empty"
-        if not os.path.exists(reg_path):
-            return {}, f"room registry file not found: {reg_path}"
-        try:
-            from tomlkit import parse  # type: ignore
-        except Exception:
-            return {}, "missing dependency tomlkit"
-
-        try:
-            with open(reg_path, encoding="utf-8") as f:
-                doc = parse(f.read())
-        except Exception as e:
-            return {}, f"failed to parse rooms registry: {e}"
-
-        rooms = doc.get("rooms")
-        if rooms is None:
-            return {}, None
-        if not isinstance(rooms, dict):
-            return {}, "rooms registry: [rooms] must be a table"
-
-        def _parse_list(cfg: dict[str, Any], name: str) -> set[bytes]:
-            out: set[bytes] = set()
-            lst = cfg.get(name)
-            if isinstance(lst, list):
-                for item in lst:
-                    if not isinstance(item, str) or not item.strip():
-                        continue
-                    try:
-                        out.add(self._parse_identity_hash(item))
-                    except Exception:
-                        continue
-            return out
-
-        registry: dict[str, dict[str, Any]] = {}
-        for raw_room, raw_cfg in rooms.items():
-            if not isinstance(raw_room, str):
-                continue
-            try:
-                room = self._norm_room(raw_room)
-            except Exception:
-                continue
-            if not isinstance(raw_cfg, dict):
-                continue
-
-            founder_hex = raw_cfg.get("founder")
-            founder = None
-            if isinstance(founder_hex, str) and founder_hex.strip():
-                try:
-                    founder = self._parse_identity_hash(founder_hex)
-                except Exception:
-                    founder = None
-
-            topic = raw_cfg.get("topic")
-            if not isinstance(topic, str) or not topic.strip():
-                topic = None
-
-            moderated = bool(raw_cfg.get("moderated", False))
-
-            invite_only = bool(raw_cfg.get("invite_only", False))
-            topic_ops_only = bool(raw_cfg.get("topic_ops_only", False))
-            no_outside_msgs = bool(raw_cfg.get("no_outside_msgs", False))
-
-            key = raw_cfg.get("key")
-            if not isinstance(key, str) or not key:
-                key = None
-
-            last_used_ts = raw_cfg.get("last_used_ts")
-            try:
-                last_used_ts = float(last_used_ts) if last_used_ts is not None else None
-            except Exception:
-                last_used_ts = None
-
-            ops = _parse_list(raw_cfg, "operators")
-            voiced = _parse_list(raw_cfg, "voiced")
-            bans = _parse_list(raw_cfg, "bans")
-
-            invited: dict[bytes, float] = {}
-            raw_inv = raw_cfg.get("invited")
-            now = float(time.time())
-            ttl_src = invite_timeout_s
-            if ttl_src is None:
-                ttl_src = self.config.room_invite_timeout_s
-            ttl = float(ttl_src) if ttl_src else 0.0
-            if ttl <= 0:
-                ttl = 900.0
-
-            # New format: invited is a table mapping hex->expiry_ts
-            if isinstance(raw_inv, dict):
-                for k, v in raw_inv.items():
-                    if not isinstance(k, str) or not k.strip():
-                        continue
-                    try:
-                        h = self._parse_identity_hash(k)
-                    except Exception:
-                        continue
-                    try:
-                        exp = float(v)
-                    except Exception:
-                        continue
-                    if exp > now:
-                        invited[h] = exp
-
-            # Back-compat: invited as a list of identity hashes => grant ttl from now
-            elif isinstance(raw_inv, list):
-                for item in raw_inv:
-                    if not isinstance(item, str) or not item.strip():
-                        continue
-                    try:
-                        h = self._parse_identity_hash(item)
-                    except Exception:
-                        continue
-                    invited[h] = now + ttl
-
-            if founder is not None:
-                ops.add(founder)
-
-            registry[room] = {
-                "founder": founder,
-                "registered": True,
-                "topic": topic,
-                "moderated": moderated,
-                "invite_only": invite_only,
-                "topic_ops_only": topic_ops_only,
-                "no_outside_msgs": no_outside_msgs,
-                "key": key,
-                "ops": ops,
-                "voiced": voiced,
-                "bans": bans,
-                "invited": invited,
-                "last_used_ts": last_used_ts,
-            }
-
-        return registry, None
-
-    def _diff_room_registry_summary(
-        self, old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]
-    ) -> list[str]:
-        old_rooms = set(old.keys())
-        new_rooms = set(new.keys())
-        added = sorted(new_rooms - old_rooms)
-        removed = sorted(old_rooms - new_rooms)
-
-        lines: list[str] = []
-        if added:
-            preview = ", ".join(added[:10])
-            suffix = "" if len(added) <= 10 else f" (+{len(added) - 10} more)"
-            lines.append(f"rooms_added={len(added)}: {preview}{suffix}")
-        if removed:
-            preview = ", ".join(removed[:10])
-            suffix = "" if len(removed) <= 10 else f" (+{len(removed) - 10} more)"
-            lines.append(f"rooms_removed={len(removed)}: {preview}{suffix}")
-        if not lines:
-            lines.append(f"rooms_changed=0 (registered_rooms={len(new_rooms)})")
-        return lines
-
-    def _room_modes(self, room: str) -> dict[str, Any]:
-        st = self._room_state_ensure(room)
-        registered = bool(st.get("registered", False))
-        moderated = bool(st.get("moderated", False))
-        invite_only = bool(st.get("invite_only", False))
-        topic_ops_only = bool(st.get("topic_ops_only", False))
-        no_outside_msgs = bool(st.get("no_outside_msgs", False))
-        private = bool(st.get("private", False))
-        key = st.get("key")
-        has_key = isinstance(key, str) and bool(key)
-        return {
-            "registered": registered,
-            "moderated": moderated,
-            "invite_only": invite_only,
-            "topic_ops_only": topic_ops_only,
-            "no_outside_msgs": no_outside_msgs,
-            "private": private,
-            "has_key": has_key,
-        }
-
-    def _room_mode_string(self, room: str) -> str:
-        m = self._room_modes(room)
-        flags: list[str] = []
-        # Keep roughly IRC-ish order.
-        if m.get("invite_only"):
-            flags.append("i")
-        if m.get("has_key"):
-            flags.append("k")
-        if m.get("moderated"):
-            flags.append("m")
-        if m.get("no_outside_msgs"):
-            flags.append("n")
-        if m.get("private"):
-            flags.append("p")
-        if m.get("registered"):
-            flags.append("r")
-        if m.get("topic_ops_only"):
-            flags.append("t")
-        return "+" + "".join(flags) if flags else "(none)"
-
-    def _broadcast_room_mode(
-        self, room: str, outgoing: list[tuple[RNS.Link, bytes]] | None = None
-    ) -> None:
-        mode_txt = self._room_mode_string(room)
-        with self._state_lock:
-            recipients = list(self.rooms.get(room, set()))
-        for other in recipients:
-            self._emit_notice(
-                outgoing, other, room, f"mode for {room} is now: {mode_txt}"
-            )
-
     def _ensure_worker_threads(self) -> None:
         # Announce loop
         if self._announce_thread is None or not self._announce_thread.is_alive():
@@ -829,7 +646,7 @@ class HubService:
             old_cfg = self.config
             old_trusted = set(self._trusted)
             old_banned = set(self._banned)
-            old_registry = dict(self._room_registry)
+            old_registry = dict(self.room_manager._room_registry)
 
         # Stage config parse
         try:
@@ -865,7 +682,7 @@ class HubService:
             if new_cfg.room_registry_path
             else ""
         )
-        new_registry, reg_err = self._load_room_registry_from_path(
+        new_registry, reg_err = self.room_manager.load_registry_from_path(
             reg_path,
             invite_timeout_s=new_cfg.room_invite_timeout_s,
         )
@@ -878,57 +695,11 @@ class HubService:
             self.config = new_cfg
             self._trusted = new_trusted
             self._banned = new_banned
-            self._room_registry = new_registry
+            self.room_manager._room_registry = new_registry
 
             # Merge registry into live per-room state (for active rooms).
             # This makes /reload take effect immediately for existing members.
-            for r, st in list(self._room_state.items()):
-                if not isinstance(st, dict):
-                    continue
-
-                reg = self._room_registry.get(r)
-                if reg is None:
-                    # If a room was unregistered on disk, reflect that.
-                    if st.get("registered"):
-                        st["registered"] = False
-                    continue
-
-                st["registered"] = True
-
-                founder = reg.get("founder")
-                if isinstance(founder, (bytes, bytearray)):
-                    st["founder"] = bytes(founder)
-
-                # Simple scalar fields
-                for key in (
-                    "topic",
-                    "moderated",
-                    "invite_only",
-                    "topic_ops_only",
-                    "no_outside_msgs",
-                    "key",
-                    "last_used_ts",
-                ):
-                    if key in reg:
-                        st[key] = reg.get(key)
-
-                # Set fields
-                for key in ("ops", "voiced", "bans"):
-                    v = reg.get(key)
-                    if isinstance(v, set):
-                        st[key] = set(v)
-
-                # Invites (dict[bytes, float])
-                inv = reg.get("invited")
-                if isinstance(inv, dict):
-                    st["invited"] = dict(inv)
-
-                # Ensure founder stays op.
-                founder_st = st.get("founder")
-                if isinstance(founder_st, (bytes, bytearray)):
-                    ops = st.setdefault("ops", set())
-                    if isinstance(ops, set):
-                        ops.add(bytes(founder_st))
+            self.room_manager.merge_registry_into_state(new_registry)
 
         self._ensure_worker_threads()
 
@@ -939,7 +710,7 @@ class HubService:
             self.log.exception("Failed to reconfigure logging")
 
         cfg_changes = self._diff_config_summary(old_cfg, new_cfg)
-        room_changes = self._diff_room_registry_summary(old_registry, new_registry)
+        room_changes = self.room_manager.diff_registry_summary(old_registry, new_registry)
 
         lines: list[str] = []
         lines.append(
@@ -963,159 +734,19 @@ class HubService:
 
         self._emit_notice(outgoing, link, room, "\n".join(lines))
 
-    def _room_registry_path_for_writes(self) -> str | None:
-        p = self.config.room_registry_path
-        if not p:
-            return
-        return expand_path(str(p))
-
     def _load_registered_rooms_from_registry(self) -> None:
-        reg_path = self._room_registry_path_for_writes()
+        reg_path = self.room_manager.get_registry_path_for_writes()
         if not reg_path:
             return
-        registry, err = self._load_room_registry_from_path(reg_path)
+        registry, err = self.room_manager.load_registry_from_path(
+            reg_path, invite_timeout_s=self.config.room_invite_timeout_s
+        )
         if err is not None:
             return
-        self._room_registry = registry
-
-    def _room_state_get(self, room: str) -> dict[str, Any] | None:
-        return self._room_state.get(room)
-
-    def _room_state_ensure(
-        self, room: str, *, founder: bytes | None = None
-    ) -> dict[str, Any]:
-        st = self._room_state.get(room)
-        if st is not None:
-            if st.get("founder") is None and founder is not None:
-                st["founder"] = founder
-                st.setdefault("ops", set()).add(founder)
-            return st
-
-        if room in self._room_registry:
-            base = self._room_registry[room]
-            invited = base.get("invited")
-            invited_dict: dict[bytes, float] = {}
-            if isinstance(invited, dict):
-                for k, v in invited.items():
-                    if isinstance(k, (bytes, bytearray)):
-                        try:
-                            invited_dict[bytes(k)] = float(v)
-                        except Exception:
-                            continue
-            st = {
-                "founder": base.get("founder"),
-                "registered": True,
-                "topic": base.get("topic"),
-                "moderated": bool(base.get("moderated", False)),
-                "invite_only": bool(base.get("invite_only", False)),
-                "topic_ops_only": bool(base.get("topic_ops_only", False)),
-                "no_outside_msgs": bool(base.get("no_outside_msgs", False)),
-                "private": bool(base.get("private", False)),
-                "key": base.get("key"),
-                "ops": set(base.get("ops", set())),
-                "voiced": set(base.get("voiced", set())),
-                "bans": set(base.get("bans", set())),
-                "invited": invited_dict,
-                "last_used_ts": base.get("last_used_ts"),
-            }
-            self._room_state[room] = st
-            return st
-
-        st = {
-            "founder": founder,
-            "registered": False,
-            "topic": None,
-            "moderated": False,
-            "invite_only": False,
-            "topic_ops_only": False,
-            "no_outside_msgs": False,
-            "private": False,
-            "key": None,
-            "ops": set([founder]) if founder is not None else set(),
-            "voiced": set(),
-            "bans": set(),
-            "invited": {},
-            "last_used_ts": None,
-        }
-        self._room_state[room] = st
-        return st
-
-    def _prune_expired_invites(self, st: dict[str, Any]) -> bool:
-        inv = st.get("invited")
-        if not isinstance(inv, dict) or not inv:
-            return False
-        now = float(time.time())
-        removed_any = False
-        for h, exp in list(inv.items()):
-            try:
-                exp_f = float(exp)
-            except Exception:
-                exp_f = 0.0
-            if exp_f <= now:
-                inv.pop(h, None)
-                removed_any = True
-        return removed_any
-
-    def _is_invited(self, st: dict[str, Any], peer_hash: bytes) -> bool:
-        inv = st.get("invited")
-        if not isinstance(inv, dict) or not inv:
-            return False
-        now = float(time.time())
-        exp = inv.get(peer_hash)
-        try:
-            exp_f = float(exp) if exp is not None else 0.0
-        except Exception:
-            exp_f = 0.0
-        if exp_f <= now:
-            inv.pop(peer_hash, None)
-            return False
-        return True
-
-    def _touch_room(self, room: str) -> None:
-        try:
-            st = self._room_state_ensure(room)
-            ts = float(time.time())
-            st["last_used_ts"] = ts
-            reg = self._room_registry.get(room)
-            if isinstance(reg, dict):
-                reg["last_used_ts"] = ts
-        except Exception:
-            pass
+        self.room_manager._room_registry = registry
 
     def _is_server_op(self, peer_hash: bytes | None) -> bool:
         return self._is_trusted(peer_hash)
-
-    def _is_room_op(self, room: str, peer_hash: bytes | None) -> bool:
-        if peer_hash is None:
-            return False
-        if self._is_server_op(peer_hash):
-            return True
-        st = self._room_state_ensure(room)
-        founder = st.get("founder")
-        if isinstance(founder, (bytes, bytearray)) and bytes(founder) == peer_hash:
-            return True
-        ops = st.get("ops")
-        return isinstance(ops, set) and peer_hash in ops
-
-    def _is_room_voiced(self, room: str, peer_hash: bytes | None) -> bool:
-        if peer_hash is None:
-            return False
-        if self._is_room_op(room, peer_hash):
-            return True
-        st = self._room_state_ensure(room)
-        voiced = st.get("voiced")
-        return isinstance(voiced, set) and peer_hash in voiced
-
-    def _is_room_banned(self, room: str, peer_hash: bytes | None) -> bool:
-        if peer_hash is None:
-            return False
-        st = self._room_state_ensure(room)
-        bans = st.get("bans")
-        return isinstance(bans, set) and peer_hash in bans
-
-    def _room_moderated(self, room: str) -> bool:
-        st = self._room_state_ensure(room)
-        return bool(st.get("moderated", False))
 
     def _resolve_identity_hash(
         self, token: str, *, room: str | None = None
@@ -1160,211 +791,6 @@ class HubService:
         except Exception:
             return (None, [])
 
-    def _persist_room_state_to_registry(self, link: RNS.Link, room: str | None) -> None:
-        if room is None:
-            return
-        reg_path = self._room_registry_path_for_writes()
-        if not reg_path:
-            return
-        st = self._room_state_get(room)
-        if not st or not st.get("registered"):
-            return
-
-        try:
-            from tomlkit import dumps, parse, table  # type: ignore
-        except Exception:
-            return
-
-        try:
-            with self._room_registry_write_lock:
-                file_stat = None
-                try:
-                    file_stat = os.stat(reg_path)
-                except Exception:
-                    file_stat = None
-
-                with open(reg_path, encoding="utf-8") as f:
-                    doc = parse(f.read())
-
-                rooms = doc.get("rooms")
-                if rooms is None:
-                    rooms = table()
-                    doc["rooms"] = rooms
-
-                room_tbl = rooms.get(room)
-                if room_tbl is None:
-                    room_tbl = table()
-                    rooms[room] = room_tbl
-
-                founder = st.get("founder")
-                if isinstance(founder, (bytes, bytearray)):
-                    room_tbl["founder"] = bytes(founder).hex()
-
-                topic = st.get("topic")
-                if isinstance(topic, str) and topic.strip():
-                    room_tbl["topic"] = topic
-                else:
-                    if "topic" in room_tbl:
-                        del room_tbl["topic"]
-
-                room_tbl["moderated"] = bool(st.get("moderated", False))
-
-                room_tbl["invite_only"] = bool(st.get("invite_only", False))
-                room_tbl["topic_ops_only"] = bool(st.get("topic_ops_only", False))
-                room_tbl["no_outside_msgs"] = bool(st.get("no_outside_msgs", False))
-
-                key = st.get("key")
-                if isinstance(key, str) and key:
-                    room_tbl["key"] = key
-                else:
-                    if "key" in room_tbl:
-                        del room_tbl["key"]
-
-                last_used_ts = st.get("last_used_ts")
-                if last_used_ts is None:
-                    last_used_ts = float(time.time())
-                try:
-                    room_tbl["last_used_ts"] = float(last_used_ts)
-                except Exception:
-                    room_tbl["last_used_ts"] = float(time.time())
-
-                ops = st.get("ops")
-                if isinstance(ops, set):
-                    room_tbl["operators"] = sorted(
-                        bytes(x).hex() for x in ops if isinstance(x, (bytes, bytearray))
-                    )
-
-                voiced = st.get("voiced")
-                if isinstance(voiced, set):
-                    room_tbl["voiced"] = sorted(
-                        bytes(x).hex()
-                        for x in voiced
-                        if isinstance(x, (bytes, bytearray))
-                    )
-
-                bans = st.get("bans")
-                if isinstance(bans, set):
-                    room_tbl["bans"] = sorted(
-                        bytes(x).hex()
-                        for x in bans
-                        if isinstance(x, (bytes, bytearray))
-                    )
-
-                invited = st.get("invited")
-                if isinstance(invited, dict):
-                    inv_tbl = {}
-                    now = float(time.time())
-                    for h, exp in invited.items():
-                        if not isinstance(h, (bytes, bytearray)):
-                            continue
-                        try:
-                            exp_f = float(exp)
-                        except Exception:
-                            continue
-                        if exp_f > now:
-                            inv_tbl[bytes(h).hex()] = exp_f
-                    room_tbl["invited"] = inv_tbl
-
-                new_text = dumps(doc)
-                with open(reg_path, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-
-                if file_stat is not None:
-                    try:
-                        os.chmod(reg_path, file_stat.st_mode)
-                    except Exception:
-                        pass
-        except Exception as e:
-            self._notice_to(link, room, f"room config persist failed: {e}")
-
-    def _delete_room_from_registry(self, link: RNS.Link, room: str) -> None:
-        reg_path = self._room_registry_path_for_writes()
-        if not reg_path:
-            return
-        try:
-            from tomlkit import dumps, parse  # type: ignore
-        except Exception:
-            return
-
-        try:
-            with self._room_registry_write_lock:
-                file_stat = None
-                try:
-                    file_stat = os.stat(reg_path)
-                except Exception:
-                    file_stat = None
-
-                with open(reg_path, encoding="utf-8") as f:
-                    doc = parse(f.read())
-
-                rooms = doc.get("rooms")
-                if isinstance(rooms, dict) and room in rooms:
-                    try:
-                        del rooms[room]
-                    except Exception:
-                        rooms.pop(room, None)
-
-                new_text = dumps(doc)
-                with open(reg_path, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-
-                if file_stat is not None:
-                    try:
-                        os.chmod(reg_path, file_stat.st_mode)
-                    except Exception:
-                        pass
-        except Exception as e:
-            self._notice_to(link, room, f"room unregister persist failed: {e}")
-
-    def _prune_loop(self) -> None:
-        while not self._shutdown.is_set():
-            interval = float(self.config.room_registry_prune_interval_s)
-            prune_after = float(self.config.room_registry_prune_after_s)
-            if interval <= 0 or prune_after <= 0:
-                time.sleep(1.0)
-                continue
-
-            time.sleep(interval)
-            if self._shutdown.is_set():
-                break
-
-            now = float(time.time())
-
-            rooms_to_prune: list[str] = []
-            dummy_link: RNS.Link | None = None
-
-            with self._state_lock:
-                dummy_link = next(iter(self.session_manager.sessions.keys()), None)
-
-                for room, reg in list(self._room_registry.items()):
-                    # Skip active rooms.
-                    if room in self.rooms and self.rooms.get(room):
-                        continue
-
-                    last_used = reg.get("last_used_ts")
-                    try:
-                        last_used = float(last_used) if last_used is not None else None
-                    except Exception:
-                        last_used = None
-                    if last_used is None:
-                        # Never-used rooms are eligible after prune_after from process start.
-                        last_used = self._started_wall_time or now
-
-                    if (now - float(last_used)) < prune_after:
-                        continue
-
-                    # Prune in-memory under lock.
-                    self._room_registry.pop(room, None)
-                    self._room_state.pop(room, None)
-                    rooms_to_prune.append(room)
-
-            if dummy_link is not None:
-                for room in rooms_to_prune:
-                    self._delete_room_from_registry(dummy_link, room)
-
-            for room in rooms_to_prune:
-                self.log.info("Pruned unused registered room %s", room)
-
     def _resource_cleanup_loop(self) -> None:
         """Periodically cleanup expired resource expectations."""
         while not self._shutdown.is_set():
@@ -1376,6 +802,35 @@ class HubService:
                 self.resource_manager.cleanup_all_expired_expectations()
             except Exception:
                 self.log.exception("Resource cleanup failed")
+
+    def _prune_loop(self) -> None:
+        """Periodically prune unused registered rooms."""
+        while not self._shutdown.is_set():
+            interval = float(self.config.room_registry_prune_interval_s)
+            prune_after = float(self.config.room_registry_prune_after_s)
+            if interval <= 0 or prune_after <= 0:
+                time.sleep(1.0)
+                continue
+
+            time.sleep(interval)
+            if self._shutdown.is_set():
+                break
+
+            rooms_to_prune: list[str] = []
+            dummy_link: RNS.Link | None = None
+
+            with self._state_lock:
+                dummy_link = next(iter(self.session_manager.sessions.keys()), None)
+                rooms_to_prune = self.room_manager.prune_unused_registered_rooms(
+                    prune_after, self._started_wall_time or time.time()
+                )
+
+            if dummy_link is not None:
+                for room in rooms_to_prune:
+                    self.room_manager.delete_room_from_registry(dummy_link, room)
+
+            for room in rooms_to_prune:
+                self.log.info("Pruned unused registered room %s", room)
 
     def _config_path_for_writes(self) -> str | None:
         p = self.config.config_path
@@ -1519,13 +974,10 @@ class HubService:
             sessions_welcomed = session_stats["welcomed"]
             sessions_identified = session_stats["identified"]
 
-            rooms_total = len(self.rooms)
-            memberships = sum(len(v) for v in self.rooms.values())
-
-            top_rooms = sorted(
-                ((room, len(links)) for room, links in self.rooms.items()),
-                key=lambda x: (-x[1], x[0]),
-            )[:5]
+            room_stats = self.room_manager.get_stats()
+            rooms_total = room_stats["rooms_total"]
+            memberships = room_stats["memberships"]
+            top_rooms = room_stats["top_rooms"]
 
             trusted_count = len(self._trusted)
             banned_count = len(self._banned)
@@ -1652,6 +1104,8 @@ class HubService:
             peer_hash=sess.get("peer"),
             motd=self.config.greeting,
         )
+        
+        # Send queued WELCOME first
         for out_link, payload in outgoing:
             self._inc("bytes_out", len(payload))
             try:
@@ -1670,6 +1124,21 @@ class HubService:
                     len(payload),
                     exc_info=True,
                 )
+        
+        # Now send MOTD via resource or chunks (after WELCOME is sent)
+        if self.config.greeting:
+            self.log.debug(
+                "Sending MOTD link_id=%s len=%s",
+                self._fmt_link_id(link),
+                len(self.config.greeting),
+            )
+            self._send_text_smart(
+                link,
+                msg_type=T_NOTICE,
+                text=self.config.greeting,
+                room=None,
+                kind=RES_KIND_MOTD,
+            )
 
     def _on_close(self, link: RNS.Link) -> None:
         peer = None
@@ -1731,7 +1200,7 @@ class HubService:
         # Packet callbacks can occur concurrently with other link callbacks and
         # background worker threads. Keep state mutations under the shared lock,
         # but avoid holding the lock while sending packets via RNS.
-        outgoing: list[tuple[RNS.Link, bytes]] = []
+        outgoing: list[tuple[RNS.Link, bytes]] = OutgoingList()
         with self._state_lock:
             self._on_packet_locked(link, data, outgoing)
 
@@ -1760,6 +1229,14 @@ class HubService:
                     len(payload),
                     exc_info=True,
                 )
+        
+        # Execute any post-send callbacks (e.g., for MOTD after WELCOME)
+        if hasattr(outgoing, '_post_send_callbacks'):
+            for callback in outgoing._post_send_callbacks:  # type: ignore
+                try:
+                    callback()
+                except Exception:
+                    self.log.exception("Post-send callback failed")
 
     def _on_packet_locked(
         self,

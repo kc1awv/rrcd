@@ -5,6 +5,11 @@ from typing import TYPE_CHECKING, Any
 
 import RNS
 
+
+class OutgoingList(list):
+    """Custom list that allows attaching callback attributes."""
+    pass
+
 from .codec import decode, encode
 from .constants import (
     B_HELLO_CAPS,
@@ -19,6 +24,7 @@ from .constants import (
     K_ROOM,
     K_SRC,
     K_T,
+    RES_KIND_MOTD,
     T_HELLO,
     T_JOIN,
     T_JOINED,
@@ -336,6 +342,22 @@ class MessageRouter:
             peer_hash=peer_hash,
             motd=self.hub.config.greeting,
         )
+        
+        # Send MOTD after WELCOME (outside of outgoing queue to enable resource transfer)
+        # The outgoing queue will be sent first, then this callback will send the MOTD
+        if self.hub.config.greeting:
+            def send_motd():
+                self.hub._send_text_smart(
+                    link,
+                    msg_type=T_NOTICE,
+                    text=self.hub.config.greeting,
+                    room=None,
+                    kind=RES_KIND_MOTD,
+                )
+            # Store callback to be executed after outgoing packets are sent
+            if not hasattr(outgoing, '_post_send_callbacks'):
+                outgoing._post_send_callbacks = []  # type: ignore
+            outgoing._post_send_callbacks.append(send_motd)  # type: ignore
 
     def _handle_re_hello(
         self,
@@ -362,12 +384,7 @@ class MessageRouter:
 
         # Remove this link from all room membership sets and prune empties.
         for r in old_rooms:
-            self.hub.rooms.get(r, set()).discard(link)
-            if r in self.hub.rooms and not self.hub.rooms[r]:
-                self.hub.rooms.pop(r, None)
-                st = self.hub._room_state_get(r)
-                if st is not None and not st.get("registered"):
-                    self.hub._room_state.pop(r, None)
+            self.hub.room_manager.remove_member(r, link)
 
         new_nick = None
 
@@ -448,15 +465,15 @@ class MessageRouter:
             return
 
         # If room is registered, load its state now.
-        if r in self.hub._room_registry:
-            self.hub._room_state_ensure(r)
+        if r in self.hub.room_manager._room_registry:
+            self.hub.room_manager._room_state_ensure(r)
 
-        st = self.hub._room_state_ensure(r)
+        st = self.hub.room_manager._room_state_ensure(r)
 
         # +i invite-only
         if bool(st.get("invite_only", False)):
-            is_invited = self.hub._is_invited(st, peer_hash)
-            if not self.hub._is_room_op(r, peer_hash) and not is_invited:
+            is_invited = self.hub.room_manager.is_invited(r, peer_hash)
+            if not self.hub.room_manager.is_room_op(r, peer_hash) and not is_invited:
                 if self.hub.identity is not None:
                     self.hub._emit_error(
                         outgoing,
@@ -470,8 +487,8 @@ class MessageRouter:
         # +k key/password (JOIN body must be the key string)
         key = st.get("key")
         if isinstance(key, str) and key:
-            is_invited = self.hub._is_invited(st, peer_hash)
-            if not self.hub._is_room_op(r, peer_hash) and not is_invited:
+            is_invited = self.hub.room_manager.is_invited(r, peer_hash)
+            if not self.hub.room_manager.is_room_op(r, peer_hash) and not is_invited:
                 provided = body if isinstance(body, str) else None
                 if provided != key:
                     if self.hub.identity is not None:
@@ -485,7 +502,7 @@ class MessageRouter:
                     return
 
         # Room bans are room-local and apply to JOIN.
-        if self.hub._is_room_banned(r, peer_hash):
+        if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub._emit_error(
                     outgoing,
@@ -497,12 +514,12 @@ class MessageRouter:
             return
 
         # If the room doesn't exist yet (in-memory), the first joiner is the founder.
-        if r not in self.hub.rooms:
-            self.hub.rooms[r] = set()
-            self.hub._room_state_ensure(r, founder=peer_hash)
+        if not self.hub.room_manager.get_room_members(r):
+            pass  # room created by add_member
+            self.hub.room_manager._room_state_ensure(r, founder=peer_hash)
 
         sess["rooms"].add(r)
-        self.hub.rooms.setdefault(r, set()).add(link)
+        self.hub.room_manager.add_member(r, link)
 
         self.log.info(
             "JOIN peer=%s nick=%r room=%s link_id=%s",
@@ -512,12 +529,12 @@ class MessageRouter:
             self.hub._fmt_link_id(link),
         )
 
-        self.hub._touch_room(r)
+        self.hub.room_manager.touch_room(r)
 
         joined_body = None
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
-            for member_link in self.hub.rooms.get(r, set()):
+            for member_link in self.hub.room_manager.get_room_members(r):
                 s = self.hub.session_manager.sessions.get(member_link)
                 ph = s.get("peer") if s else None
                 if isinstance(ph, (bytes, bytearray)):
@@ -535,14 +552,14 @@ class MessageRouter:
             if isinstance(inv, dict) and peer_hash in inv:
                 inv.pop(peer_hash, None)
                 if bool(st.get("registered")):
-                    self.hub._persist_room_state_to_registry(link, r)
+                    self.hub.room_manager.persist_room_state(link, r)
         except Exception:
             pass
 
         try:
             registered = bool(st.get("registered", False))
             topic = st.get("topic") if isinstance(st.get("topic"), str) else None
-            mode_txt = self.hub._room_mode_string(r)
+            mode_txt = self.hub.room_manager.get_room_mode_string(r)
             topic_txt = topic if topic else "(none)"
             reg_txt = "registered" if registered else "unregistered"
             self.hub._emit_notice(
@@ -586,23 +603,23 @@ class MessageRouter:
             return
 
         sess["rooms"].discard(r)
-        if r in self.hub.rooms:
-            self.hub.rooms[r].discard(link)
-            if not self.hub.rooms[r]:
-                self.hub.rooms.pop(r, None)
-                st = self.hub._room_state_get(r)
+        if self.hub.room_manager.get_room_members(r):
+            self.hub.room_manager.remove_member(r, link)
+            if not self.hub.room_manager.get_room_members(r):
+                self.hub.room_manager.remove_member(r, link)
+                st = self.hub.room_manager._room_state_get(r)
                 if st is not None:
-                    self.hub._touch_room(r)
+                    self.hub.room_manager.touch_room(r)
                     if st.get("registered"):
-                        self.hub._persist_room_state_to_registry(link, r)
+                        self.hub.room_manager.persist_room_state(link, r)
                 if st is not None and not st.get("registered"):
-                    self.hub._room_state.pop(r, None)
+                    self.hub.room_manager._room_state.pop(r, None)
 
         # Per spec: acknowledge PART with PARTED.
         parted_body = None
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
-            for member_link in self.hub.rooms.get(r, set()):
+            for member_link in self.hub.room_manager.get_room_members(r):
                 s = self.hub.session_manager.sessions.get(member_link)
                 ph = s.get("peer") if s else None
                 if isinstance(ph, (bytes, bytearray)):
@@ -701,10 +718,10 @@ class MessageRouter:
             # +n (no outside messages): when enabled, require membership.
             # When disabled (-n), allow sending to existing/registered rooms.
             st = None
-            if r in self.hub._room_registry:
-                st = self.hub._room_state_ensure(r)
-            elif r in self.hub.rooms:
-                st = self.hub._room_state_ensure(r)
+            if r in self.hub.room_manager._room_registry:
+                st = self.hub.room_manager._room_state_ensure(r)
+            elif self.hub.room_manager.get_room_members(r):
+                st = self.hub.room_manager._room_state_ensure(r)
 
             if st is None:
                 if self.hub.identity is not None:
@@ -729,7 +746,7 @@ class MessageRouter:
                 return
 
         # Per-room moderation: bans and moderated mode.
-        if self.hub._is_room_banned(r, peer_hash):
+        if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub._emit_error(
                     outgoing,
@@ -739,7 +756,7 @@ class MessageRouter:
                     room=r,
                 )
             return
-        if self.hub._room_moderated(r) and not self.hub._is_room_voiced(r, peer_hash):
+        if self.hub.room_manager.is_room_moderated(r) and not self.hub.room_manager.is_room_voiced(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub._emit_error(
                     outgoing,
@@ -783,7 +800,7 @@ class MessageRouter:
                 env[K_NICK] = n
 
         payload = encode(env)
-        for other in list(self.hub.rooms.get(r, set())):
+        for other in list(self.hub.room_manager.get_room_members(r)):
             self.hub._queue_payload(outgoing, other, payload)
 
         if self.log.isEnabledFor(logging.DEBUG):
@@ -793,7 +810,7 @@ class MessageRouter:
                 self.hub._fmt_hash(peer_hash),
                 sess.get("nick"),
                 r,
-                len(self.hub.rooms.get(r, set())),
+                len(self.hub.room_manager.get_room_members(r)),
                 type(body).__name__,
             )
 

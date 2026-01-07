@@ -416,7 +416,7 @@ class ResourceManager:
                 with self.hub._state_lock:
                     sess = self.hub.session_manager.sessions.get(link)
                     peer_hash = sess.get("peer") if sess else None
-                    room_members = self.hub.rooms.get(exp.room, set())
+                    room_members = self.hub.room_manager.get_room_members(exp.room)
                 
                 if peer_hash and room_members:
                     notice_env = make_envelope(
@@ -494,6 +494,10 @@ class ResourceManager:
         """
         Send large payload via Resource.
         Returns True if successfully initiated, False otherwise.
+        
+        Note: This sends the resource envelope immediately, then creates
+        and advertises the resource. Should only be called when immediate
+        sending is desired (not when batching messages).
         """
         if not self.hub.config.enable_resource_transfer:
             return False
@@ -555,7 +559,9 @@ class ResourceManager:
         
         # Create and advertise resource
         try:
-            resource = RNS.Resource(payload, link, advertise=True, auto_compress=False)
+            resource = RNS.Resource(
+                payload, link, advertise=True, auto_compress=False
+            )
             
             with self.hub._state_lock:
                 self._active_resources.setdefault(link, set()).add(resource)

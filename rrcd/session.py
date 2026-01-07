@@ -130,12 +130,7 @@ class SessionManager:
 
         # Clean up room memberships
         for room in list(sess["rooms"]):
-            self.hub.rooms.get(room, set()).discard(link)
-            if room in self.hub.rooms and not self.hub.rooms[room]:
-                self.hub.rooms.pop(room, None)
-                st = self.hub._room_state_get(room)
-                if st is not None and not st.get("registered"):
-                    self.hub._room_state.pop(room, None)
+            self.hub.room_manager.remove_member(room, link)
 
         return peer, nick, rooms_count
 
