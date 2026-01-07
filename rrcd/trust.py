@@ -110,7 +110,7 @@ class TrustManager:
         outgoing: list[tuple[RNS.Link, bytes]] | None = None,
     ) -> None:
         """Persist the current banned identities list to the config file."""
-        cfg_path = self.hub._config_path_for_writes()
+        cfg_path = self.hub.config_manager.get_config_path_for_writes()
         if not cfg_path:
             self.hub._emit_notice(
                 outgoing, link, room, "ban updated (not persisted; no config_path)"
@@ -129,7 +129,7 @@ class TrustManager:
             return
 
         try:
-            with self.hub._config_write_lock:
+            with self.hub.config_manager.get_write_lock():
                 st = None
                 try:
                     st = os.stat(cfg_path)
