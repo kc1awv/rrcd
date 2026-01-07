@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import RNS
+
     from .service import HubService
 
 
 class TrustManager:
     """
     Manages trusted and banned identities for the hub.
-    
+
     Handles:
     - Trusted identity lists (server operators)
     - Banned identity lists
@@ -24,11 +25,13 @@ class TrustManager:
     def __init__(self, hub: HubService) -> None:
         self.hub = hub
         self.log = hub.log
-        
+
         self._trusted: set[bytes] = set()
         self._banned: set[bytes] = set()
 
-    def load_from_config(self, trusted_list: list[str] | None, banned_list: list[str] | None) -> None:
+    def load_from_config(
+        self, trusted_list: list[str] | None, banned_list: list[str] | None
+    ) -> None:
         """Load trusted and banned identities from config lists."""
         self._trusted = {
             self.hub._parse_identity_hash(h)
@@ -77,7 +80,9 @@ class TrustManager:
                 "banned_count": len(self._banned),
             }
 
-    def update_from_config(self, trusted_list: list[str] | None, banned_list: list[str] | None) -> tuple[set[bytes], set[bytes]]:
+    def update_from_config(
+        self, trusted_list: list[str] | None, banned_list: list[str] | None
+    ) -> tuple[set[bytes], set[bytes]]:
         """
         Update trusted and banned lists from config.
         Returns the old (trusted, banned) sets for comparison.

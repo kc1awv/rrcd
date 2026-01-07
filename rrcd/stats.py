@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -33,8 +32,6 @@ class StatsManager:
         self.started_wall_time: float | None = None
         self.started_monotonic: float | None = None
         
-        # Lifetime counters for uptime statistics (monotonically increasing after startup).
-        # Python int has arbitrary precision, so overflow is not a concern.
         self._counters: dict[str, int] = {
             "bytes_in": 0,
             "bytes_out": 0,

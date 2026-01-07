@@ -28,13 +28,7 @@ class RoomManager:
     def __init__(self, hub: HubService) -> None:
         self.hub = hub
         self.log = logging.getLogger("rrcd.rooms")
-
-        # Room memberships: room name -> set of links in that room
         self.rooms: dict[str, set[RNS.Link]] = {}
-
-        # Room state (hub-local conventions; no new on-wire message types).
-        # _room_state holds active in-memory state (and registered state for empty rooms).
-        # _room_registry holds registered rooms loaded from config.
         self._room_state: dict[str, dict[str, Any]] = {}
         self._room_registry: dict[str, dict[str, Any]] = {}
 
@@ -50,7 +44,9 @@ class RoomManager:
         """Get set of links currently in a room."""
         return self.rooms.get(room, set())
 
-    def add_member(self, room: str, link: RNS.Link, *, founder: bytes | None = None) -> None:
+    def add_member(
+        self, room: str, link: RNS.Link, *, founder: bytes | None = None
+    ) -> None:
         """Add a link to a room, creating the room if needed."""
         if room not in self.rooms:
             self.rooms[room] = set()
@@ -65,7 +61,6 @@ class RoomManager:
             if not self.rooms[room]:
                 self.rooms.pop(room, None)
                 st = self._room_state_get(room)
-                # Clean up unregistered empty rooms
                 if st is not None and not st.get("registered"):
                     self._room_state.pop(room, None)
 
@@ -94,8 +89,6 @@ class RoomManager:
             "top_rooms": top_rooms,
         }
 
-    # Room state management
-
     def _room_state_get(self, room: str) -> dict[str, Any] | None:
         """Get room state dict if it exists."""
         return self._room_state.get(room)
@@ -111,7 +104,6 @@ class RoomManager:
                 st.setdefault("ops", set()).add(founder)
             return st
 
-        # Load from registry if registered
         if room in self._room_registry:
             base = self._room_registry[room]
             invited = base.get("invited")
@@ -142,7 +134,6 @@ class RoomManager:
             self._room_state[room] = st
             return st
 
-        # Create new unregistered room
         st = {
             "founder": founder,
             "registered": False,
@@ -174,8 +165,6 @@ class RoomManager:
         except Exception:
             pass
 
-    # Room modes and permissions
-
     def get_room_modes(self, room: str) -> dict[str, Any]:
         """Get dict of room mode flags."""
         st = self._room_state_ensure(room)
@@ -201,7 +190,6 @@ class RoomManager:
         """Get IRC-style mode string for a room."""
         m = self.get_room_modes(room)
         flags: list[str] = []
-        # Keep roughly IRC-ish order.
         if m.get("invite_only"):
             flags.append("i")
         if m.get("has_key"):
@@ -265,8 +253,6 @@ class RoomManager:
         bans = st.get("bans")
         return isinstance(bans, set) and peer_hash in bans
 
-    # Invite management
-
     def is_invited(self, room: str, peer_hash: bytes) -> bool:
         """Check if peer has a valid (non-expired) invite."""
         st = self._room_state_ensure(room)
@@ -301,8 +287,6 @@ class RoomManager:
                 inv.pop(h, None)
                 removed_any = True
         return removed_any
-
-    # Room registry persistence
 
     def load_registry_from_path(
         self, path: str, *, invite_timeout_s: float
@@ -360,7 +344,9 @@ class RoomManager:
                 for op in operators:
                     if isinstance(op, str):
                         try:
-                            ops.add(bytes.fromhex(op.strip().lower().removeprefix("0x")))
+                            ops.add(
+                                bytes.fromhex(op.strip().lower().removeprefix("0x"))
+                            )
                         except Exception:
                             continue
 
@@ -370,7 +356,9 @@ class RoomManager:
                 for v in voiced_list:
                     if isinstance(v, str):
                         try:
-                            voiced.add(bytes.fromhex(v.strip().lower().removeprefix("0x")))
+                            voiced.add(
+                                bytes.fromhex(v.strip().lower().removeprefix("0x"))
+                            )
                         except Exception:
                             continue
 
@@ -380,7 +368,9 @@ class RoomManager:
                 for b in bans_list:
                     if isinstance(b, str):
                         try:
-                            bans.add(bytes.fromhex(b.strip().lower().removeprefix("0x")))
+                            bans.add(
+                                bytes.fromhex(b.strip().lower().removeprefix("0x"))
+                            )
                         except Exception:
                             continue
 
@@ -390,7 +380,9 @@ class RoomManager:
                 for h, exp in invited_dict.items():
                     if isinstance(h, str):
                         try:
-                            h_bytes = bytes.fromhex(h.strip().lower().removeprefix("0x"))
+                            h_bytes = bytes.fromhex(
+                                h.strip().lower().removeprefix("0x")
+                            )
                             exp_f = float(exp)
                             if exp_f > now:
                                 invited[h_bytes] = exp_f
@@ -446,7 +438,7 @@ class RoomManager:
     def get_registry_path_for_writes(self) -> str | None:
         """Get path to room registry file for write operations."""
         from .util import expand_path
-        
+
         p = self.hub.config.room_registry_path
         if not p:
             return None
@@ -567,7 +559,9 @@ class RoomManager:
                     except Exception:
                         pass
         except Exception as e:
-            self.hub.message_helper.notice_to(link, room, f"room config persist failed: {e}")
+            self.hub.message_helper.notice_to(
+                link, room, f"room config persist failed: {e}"
+            )
 
     def delete_room_from_registry(self, link: RNS.Link, room: str) -> None:
         """Remove a room from the registry TOML file."""
@@ -607,21 +601,22 @@ class RoomManager:
                     except Exception:
                         pass
         except Exception as e:
-            self.hub.message_helper.notice_to(link, room, f"room unregister persist failed: {e}")
+            self.hub.message_helper.notice_to(
+                link, room, f"room unregister persist failed: {e}"
+            )
 
     def prune_unused_registered_rooms(
         self, prune_after_s: float, started_wall_time: float
     ) -> list[str]:
         """
         Prune registered rooms that haven't been used recently.
-        
+
         Returns list of pruned room names.
         """
         now = float(time.time())
         rooms_to_prune: list[str] = []
 
         for room, reg in list(self._room_registry.items()):
-            # Skip active rooms
             if room in self.rooms and self.rooms.get(room):
                 continue
 
@@ -631,13 +626,11 @@ class RoomManager:
             except Exception:
                 last_used = None
             if last_used is None:
-                # Never-used rooms are eligible after prune_after from process start
                 last_used = started_wall_time
 
             if (now - float(last_used)) < prune_after_s:
                 continue
 
-            # Prune in-memory
             self._room_registry.pop(room, None)
             self._room_state.pop(room, None)
             rooms_to_prune.append(room)
@@ -647,7 +640,7 @@ class RoomManager:
     def merge_registry_into_state(self, registry: dict[str, dict[str, Any]]) -> None:
         """
         Merge registry into live room state.
-        
+
         Updates in-memory state for active rooms with registry data.
         """
         for r, st in list(self._room_state.items()):
@@ -656,7 +649,6 @@ class RoomManager:
 
             reg = registry.get(r)
             if reg is None:
-                # If a room was unregistered on disk, reflect that
                 if st.get("registered"):
                     st["registered"] = False
                 continue

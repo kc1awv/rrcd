@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -32,7 +31,7 @@ class HubRuntimeConfig:
     rate_limit_msgs_per_minute: int = 240
     ping_interval_s: float = 0.0
     ping_timeout_s: float = 0.0
-    max_resource_bytes: int = 256 * 1024  # 256 KiB default
+    max_resource_bytes: int = 256 * 1024
     max_pending_resource_expectations: int = 8
     resource_expectation_ttl_s: float = 30.0
     enable_resource_transfer: bool = True
@@ -47,7 +46,7 @@ class HubRuntimeConfig:
 class ConfigManager:
     """
     Manages hub configuration loading, reloading, and persistence.
-    
+
     Handles:
     - Loading TOML configuration files
     - Applying configuration updates
@@ -69,9 +68,7 @@ class ConfigManager:
             data = tomllib.load(f)
         return data if isinstance(data, dict) else {}
 
-    def apply_config_data(
-        self, base: HubRuntimeConfig, data: dict
-    ) -> HubRuntimeConfig:
+    def apply_config_data(self, base: HubRuntimeConfig, data: dict) -> HubRuntimeConfig:
         """Apply configuration data from TOML to a runtime config instance."""
         hub = data.get("hub") if isinstance(data, dict) else None
         if isinstance(hub, dict):
@@ -95,7 +92,6 @@ class ConfigManager:
             data = {**data, **mapped}
 
         allowed = set(asdict(base).keys())
-        # This identifies where to reload from; do not let the file override it.
         allowed.discard("config_path")
 
         updates = {k: v for k, v in data.items() if k in allowed}
@@ -155,7 +151,7 @@ class ConfigManager:
     def get_config_path_for_writes(self) -> str | None:
         """Get the resolved config file path for write operations."""
         from .util import expand_path
-        
+
         p = self.hub.config.config_path
         if not p:
             return None

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import RNS
 
 from .codec import encode
-from .constants import T_ERROR, T_NOTICE, T_WELCOME, B_WELCOME_HUB, B_WELCOME_VER
+from .constants import B_WELCOME_HUB, B_WELCOME_VER, T_ERROR, T_NOTICE, T_WELCOME
 from .envelope import make_envelope
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class MessageHelper:
     """
     Helper methods for sending and queueing messages.
-    
+
     Handles:
     - Message queueing (outgoing lists)
     - Notice chunking for large messages
@@ -33,10 +33,8 @@ class MessageHelper:
     def packet_would_fit(self, link: RNS.Link, payload: bytes) -> bool:
         """Check if payload fits within link MDU without creating/packing packets."""
         try:
-            # Query link MDU directly if available (more efficient than packing)
-            if hasattr(link, 'MDU') and link.MDU is not None:
+            if hasattr(link, "MDU") and link.MDU is not None:
                 return len(payload) <= link.MDU
-            # Fall back to packet creation if MDU not available
             pkt = RNS.Packet(link, payload)
             pkt.pack()
             return True
@@ -71,15 +69,12 @@ class MessageHelper:
         if not text:
             return
 
-        # Prefer splitting on lines for readability. If a single line is too
-        # large, further split it by characters using a pack preflight.
         lines = text.splitlines() or [text]
         for line in lines:
             remaining = line
             if not remaining:
                 continue
 
-            # Start with a generous chunk size; shrink on demand.
             max_chars = min(len(remaining), 512)
             while remaining:
                 take = min(len(remaining), max_chars)
@@ -98,7 +93,6 @@ class MessageHelper:
                     continue
 
                 if max_chars <= 1:
-                    # Nothing we can do; avoid an infinite loop.
                     self.log.warning(
                         "NOTICE chunk would not fit MTU; dropping remainder (%s chars)",
                         len(remaining),
@@ -120,13 +114,11 @@ class MessageHelper:
             return
 
         from . import __version__
-        
-        g = str(motd) if motd else ""
+
         body_w: dict[int, Any] = {
             B_WELCOME_HUB: self.hub.config.hub_name,
             B_WELCOME_VER: str(__version__),
         }
-        # Capabilities are optional; keep WELCOME minimal unless needed.
 
         welcome = make_envelope(T_WELCOME, src=self.hub.identity.hash, body=body_w)
         welcome_payload = encode(welcome)
@@ -163,13 +155,15 @@ class MessageHelper:
         - Chunked messages otherwise
         """
         from .constants import RES_KIND_MOTD, RES_KIND_NOTICE
-        
-        # Determine resource kind if not specified
+
         resource_kind = kind
         if resource_kind is None:
-            resource_kind = RES_KIND_MOTD if msg_type == T_NOTICE and room is None else RES_KIND_NOTICE
+            resource_kind = (
+                RES_KIND_MOTD
+                if msg_type == T_NOTICE and room is None
+                else RES_KIND_NOTICE
+            )
 
-        # Try resource transfer if enabled, outgoing is None, and message is large enough
         if (
             self.hub.config.enable_resource_transfer
             and outgoing is None
@@ -200,8 +194,7 @@ class MessageHelper:
                     "Resource send failed, falling back to chunks link_id=%s",
                     self.hub._fmt_link_id(link),
                 )
-        
-        # Fall back to chunking for NOTICE
+
         if msg_type == T_NOTICE:
             self.log.debug(
                 "Falling back to chunking link_id=%s outgoing_is_none=%s",
@@ -224,7 +217,6 @@ class MessageHelper:
             else:
                 self.queue_notice_chunks(outgoing, link, room=room, text=text)
         else:
-            # For other message types, just drop or log error
             self.log.error(
                 "Message too large and not NOTICE link_id=%s type=%s",
                 self.hub._fmt_link_id(link),
@@ -284,7 +276,6 @@ class MessageHelper:
         try:
             RNS.Packet(link, payload).send()
         except OSError as e:
-            # Common failure mode on low-MTU links: packet too large.
             self.log.warning(
                 "Send failed link_id=%s bytes=%s err=%s",
                 self.hub._fmt_link_id(link),

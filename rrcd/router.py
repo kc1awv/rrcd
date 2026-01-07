@@ -5,11 +5,6 @@ from typing import TYPE_CHECKING, Any
 
 import RNS
 
-
-class OutgoingList(list):
-    """Custom list that allows attaching callback attributes."""
-    pass
-
 from .codec import decode, encode
 from .constants import (
     B_HELLO_CAPS,
@@ -24,7 +19,6 @@ from .constants import (
     K_ROOM,
     K_SRC,
     K_T,
-    RES_KIND_MOTD,
     T_HELLO,
     T_JOIN,
     T_JOINED,
@@ -39,6 +33,13 @@ from .constants import (
 from .envelope import make_envelope, validate_envelope
 from .util import normalize_nick
 
+
+class OutgoingList(list):
+    """Custom list that allows attaching callback attributes."""
+
+    pass
+
+
 if TYPE_CHECKING:
     from .service import HubService
 
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 class MessageRouter:
     """
     Handles message routing and dispatching for the RRC hub.
-    
+
     This class is responsible for:
     - Decoding and validating incoming packets
     - Dispatching messages by type (HELLO, JOIN, PART, MSG, NOTICE, PING, etc.)
@@ -67,7 +68,7 @@ class MessageRouter:
     ) -> None:
         """
         Main entry point for routing an incoming packet.
-        
+
         This method should be called with the state lock held.
         """
         sess = self.hub.session_manager.sessions.get(link)
@@ -81,13 +82,11 @@ class MessageRouter:
         if peer_hash is None:
             ri = link.get_remote_identity()
             if ri is None:
-                # Per spec: the Link is the handshake. Ignore all traffic until it
-                # is identified.
                 return
             peer_hash = ri.hash
             sess["peer"] = peer_hash
 
-        if not self.hub._refill_and_take(link, 1.0):
+        if not self.hub.session_manager.refill_and_take(link, 1.0):
             self.hub.stats_manager.inc("rate_limited")
             if self.log.isEnabledFor(logging.DEBUG):
                 self.log.debug(
@@ -140,7 +139,6 @@ class MessageRouter:
                 body_len,
             )
 
-        # Dispatch by message type
         if t == T_PONG:
             self._handle_pong(link, sess)
         elif t == T_RESOURCE_ENVELOPE:
@@ -202,7 +200,6 @@ class MessageRouter:
         sha256 = body.get(B_RES_SHA256)
         encoding = body.get(B_RES_ENCODING)
 
-        # Validate required fields
         if not isinstance(rid, (bytes, bytearray)):
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
@@ -236,7 +233,6 @@ class MessageRouter:
                 )
             return
 
-        # Check size limit
         if size > self.hub.config.max_resource_bytes:
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
@@ -248,7 +244,6 @@ class MessageRouter:
                 )
             return
 
-        # Validate optional fields
         if sha256 is not None and not isinstance(sha256, (bytes, bytearray)):
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
@@ -263,7 +258,6 @@ class MessageRouter:
         if encoding is not None and not isinstance(encoding, str):
             encoding = None
 
-        # Add expectation
         if not self.hub.resource_manager.add_resource_expectation(
             link,
             rid=bytes(rid),
@@ -314,7 +308,6 @@ class MessageRouter:
         if isinstance(body, dict):
             sess["peer_caps"] = self._extract_caps(body)
 
-            # Back-compat: if a legacy client put nick in HELLO body, accept it.
             if new_nick is None:
                 legacy_nick = body.get(B_HELLO_NICK_LEGACY)
                 n2 = normalize_nick(
@@ -331,7 +324,6 @@ class MessageRouter:
             self.hub._fmt_link_id(link),
         )
 
-        # Send welcome message and MOTD
         self.hub.session_manager.send_welcome(
             link,
             outgoing,
@@ -355,7 +347,6 @@ class MessageRouter:
         if self.hub.identity is None:
             return
 
-        # Reset session state and process as new HELLO
         old_nick = sess.get("nick")
         old_rooms = set(sess.get("rooms", set()))
         sess["welcomed"] = False
@@ -363,13 +354,11 @@ class MessageRouter:
         sess["nick"] = None
         sess["peer_caps"] = {}
 
-        # Remove this link from all room membership sets and prune empties.
         for r in old_rooms:
             self.hub.room_manager.remove_member(r, link)
 
         new_nick = None
 
-        # Process the HELLO message
         if isinstance(nick, str):
             n = normalize_nick(nick, max_chars=self.hub.config.nick_max_chars)
             if n is not None:
@@ -394,7 +383,6 @@ class MessageRouter:
             self.hub._fmt_link_id(link),
         )
 
-        # Send welcome message and MOTD
         self.hub.session_manager.send_welcome(
             link,
             outgoing,
@@ -442,13 +430,11 @@ class MessageRouter:
                 )
             return
 
-        # If room is registered, load its state now.
         if r in self.hub.room_manager._room_registry:
             self.hub.room_manager._room_state_ensure(r)
 
         st = self.hub.room_manager._room_state_ensure(r)
 
-        # +i invite-only
         if bool(st.get("invite_only", False)):
             is_invited = self.hub.room_manager.is_invited(r, peer_hash)
             if not self.hub.room_manager.is_room_op(r, peer_hash) and not is_invited:
@@ -462,7 +448,6 @@ class MessageRouter:
                     )
                 return
 
-        # +k key/password (JOIN body must be the key string)
         key = st.get("key")
         if isinstance(key, str) and key:
             is_invited = self.hub.room_manager.is_invited(r, peer_hash)
@@ -479,7 +464,6 @@ class MessageRouter:
                         )
                     return
 
-        # Room bans are room-local and apply to JOIN.
         if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
@@ -491,9 +475,8 @@ class MessageRouter:
                 )
             return
 
-        # If the room doesn't exist yet (in-memory), the first joiner is the founder.
         if not self.hub.room_manager.get_room_members(r):
-            pass  # room created by add_member
+            pass
             self.hub.room_manager._room_state_ensure(r, founder=peer_hash)
 
         sess["rooms"].add(r)
@@ -524,7 +507,6 @@ class MessageRouter:
         )
         self.hub.message_helper.queue_env(outgoing, link, joined)
 
-        # Consume invite on successful join.
         try:
             inv = st.get("invited")
             if isinstance(inv, dict) and peer_hash in inv:
@@ -593,7 +575,6 @@ class MessageRouter:
                 if st is not None and not st.get("registered"):
                     self.hub.room_manager._room_state.pop(r, None)
 
-        # Per spec: acknowledge PART with PARTED.
         parted_body = None
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
@@ -631,12 +612,9 @@ class MessageRouter:
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
 
-        # Check for slash commands first, as they may not require a room.
-        # Per RRC spec, the room field is optional and may be empty.
         if isinstance(body, str):
             cmdline = body.strip()
             if cmdline.startswith("/"):
-                # It's a slash command - attempt to handle it
                 if self.log.isEnabledFor(logging.DEBUG):
                     self.log.debug(
                         "Slash command peer=%s link_id=%s cmd=%r room=%r",
@@ -655,7 +633,6 @@ class MessageRouter:
                             len(outgoing),
                         )
                     return
-                # Unrecognized slash command - send error
                 if self.hub.identity is not None:
                     self.hub.message_helper.emit_error(
                         outgoing,
@@ -666,8 +643,6 @@ class MessageRouter:
                     )
                 return
 
-        # NOTICE messages are informational/non-conversational and don't require a room.
-        # MSG messages require a room for delivery.
         if t == T_MSG:
             if not isinstance(room, str) or not room:
                 if self.hub.identity is not None:
@@ -679,7 +654,6 @@ class MessageRouter:
                     )
                 return
         elif t == T_NOTICE:
-            # NOTICE without a room is allowed - just don't forward it anywhere
             if not isinstance(room, str) or not room:
                 return
 
@@ -693,8 +667,6 @@ class MessageRouter:
             return
 
         if r not in sess["rooms"]:
-            # +n (no outside messages): when enabled, require membership.
-            # When disabled (-n), allow sending to existing/registered rooms.
             st = None
             if r in self.hub.room_manager._room_registry:
                 st = self.hub.room_manager._room_state_ensure(r)
@@ -723,7 +695,6 @@ class MessageRouter:
                     )
                 return
 
-        # Per-room moderation: bans and moderated mode.
         if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
@@ -734,7 +705,9 @@ class MessageRouter:
                     room=r,
                 )
             return
-        if self.hub.room_manager.is_room_moderated(r) and not self.hub.room_manager.is_room_voiced(r, peer_hash):
+        if self.hub.room_manager.is_room_moderated(
+            r
+        ) and not self.hub.room_manager.is_room_voiced(r, peer_hash):
             if self.hub.identity is not None:
                 self.hub.message_helper.emit_error(
                     outgoing,
@@ -753,25 +726,20 @@ class MessageRouter:
             )
         env[K_ROOM] = r
 
-        # Preserve the nickname from the incoming envelope if present.
-        # Fall back to session nickname (from HELLO) if client didn't provide one.
-        # This allows clients to update their nickname mid-session.
         incoming_nick = env.get(K_NICK)
         if incoming_nick is not None:
-            # Client provided a nickname in this message - validate and preserve it
             n = normalize_nick(incoming_nick, max_chars=self.hub.config.nick_max_chars)
             if n is not None:
-                # Update session nick and index if it changed
                 old_session_nick = sess.get("nick")
                 if old_session_nick != n:
                     sess["nick"] = n
-                    self.hub.session_manager.update_nick_index(link, old_session_nick, n)
+                    self.hub.session_manager.update_nick_index(
+                        link, old_session_nick, n
+                    )
                 env[K_NICK] = n
             else:
-                # Invalid nickname provided - remove it
                 env.pop(K_NICK, None)
         else:
-            # No nickname in message - use session nickname from HELLO if available
             nick = sess.get("nick")
             n = normalize_nick(nick, max_chars=self.hub.config.nick_max_chars)
             if n is not None:

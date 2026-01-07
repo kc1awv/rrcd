@@ -5,24 +5,15 @@ import os
 import signal
 import threading
 import time
-from dataclasses import asdict, replace
 from typing import Any
 
 import RNS
 
-from . import __version__
 from .codec import encode
 from .commands import CommandHandler
 from .config import ConfigManager, HubRuntimeConfig
 from .constants import (
-    B_WELCOME_HUB,
-    B_WELCOME_VER,
-    RES_KIND_MOTD,
-    RES_KIND_NOTICE,
-    T_ERROR,
-    T_NOTICE,
     T_PING,
-    T_WELCOME,
 )
 from .envelope import make_envelope
 from .logging_config import configure_logging
@@ -40,94 +31,23 @@ class HubService:
     def __init__(self, config: HubRuntimeConfig) -> None:
         self.config = config
         self.log = logging.getLogger("rrcd.hub")
-
-        # Shared mutable state (sessions/rooms/room registry/etc) is accessed from
-        # Reticulum callbacks and background worker threads. Guard it with a
-        # single re-entrant lock.
         self._state_lock = threading.RLock()
-
         self._shutdown = threading.Event()
-
-        # Message router for handling protocol messages
         self.router = MessageRouter(self)
-        
-        # Session manager for connection lifecycle
         self.session_manager = SessionManager(self)
-        
-        # Command handler for operator commands
         self.command_handler = CommandHandler(self)
-        
-        # Resource manager for file/data transfers
         self.resource_manager = ResourceManager(self)
-        
-        # Room manager for room memberships and permissions
         self.room_manager = RoomManager(self)
-        
-        # Stats manager for metrics and reporting
         self.stats_manager = StatsManager(self)
-        
-        # Trust manager for trusted/banned identities
         self.trust_manager = TrustManager(self)
-        
-        # Config manager for configuration loading and reloading
         self.config_manager = ConfigManager(self)
-        
-        # Message helper for sending and queueing messages
         self.message_helper = MessageHelper(self)
-
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
-
         self._prune_thread: threading.Thread | None = None
-
         self._ping_thread: threading.Thread | None = None
         self._announce_thread: threading.Thread | None = None
         self._resource_cleanup_thread: threading.Thread | None = None
-
-
-
-    def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
-        if isinstance(h, (bytes, bytearray)):
-            s = bytes(h).hex()
-            return s if prefix <= 0 else s[: min(prefix, len(s))]
-        return "-"
-
-    def _fmt_link_id(self, link: RNS.Link) -> str:
-        lid = getattr(link, "link_id", None)
-        if isinstance(lid, (bytes, bytearray)):
-            return bytes(lid).hex()
-        h = getattr(link, "hash", None)
-        if isinstance(h, (bytes, bytearray)):
-            return bytes(h).hex()
-        return "-"
-
-    def _update_nick_index(self, link: RNS.Link, old_nick: str | None, new_nick: str | None) -> None:
-        """Update nick index when a nick changes. Delegates to SessionManager."""
-        self.session_manager.update_nick_index(link, old_nick, new_nick)
-
-    # Resource transfer methods - delegates to message_helper for smart sending
-
-    def _send_text_smart(
-        self,
-        link: RNS.Link,
-        *,
-        msg_type: int,
-        text: str,
-        room: str | None = None,
-        encoding: str = "utf-8",
-        outgoing: list[tuple[RNS.Link, bytes]] | None = None,
-        kind: str | None = None,
-    ) -> None:
-        """Delegate to message_helper for smart text sending."""
-        self.message_helper.send_text_smart(
-            link,
-            msg_type=msg_type,
-            text=text,
-            room=room,
-            kind=kind,
-            outgoing=outgoing,
-            encoding=encoding,
-        )
 
     def start(self) -> None:
         self.log.info("Starting Reticulum")
@@ -199,10 +119,11 @@ class HubService:
             )
             self._prune_thread.start()
 
-        # Start resource cleanup thread if resource transfer is enabled
         if self.config.enable_resource_transfer:
             self._resource_cleanup_thread = threading.Thread(
-                target=self._resource_cleanup_loop, name="rrcd-resource-cleanup", daemon=True
+                target=self._resource_cleanup_loop,
+                name="rrcd-resource-cleanup",
+                daemon=True,
             )
             self._resource_cleanup_thread.start()
 
@@ -276,7 +197,6 @@ class HubService:
         return b
 
     def _ensure_worker_threads(self) -> None:
-        # Announce loop
         if self._announce_thread is None or not self._announce_thread.is_alive():
             if (
                 self.config.announce_period_s
@@ -289,7 +209,6 @@ class HubService:
                 )
                 self._announce_thread.start()
 
-        # Ping loop
         if self._ping_thread is None or not self._ping_thread.is_alive():
             if self.config.ping_interval_s and float(self.config.ping_interval_s) > 0:
                 self._ping_thread = threading.Thread(
@@ -297,7 +216,6 @@ class HubService:
                 )
                 self._ping_thread.start()
 
-        # Prune loop
         if self._prune_thread is None or not self._prune_thread.is_alive():
             if (
                 self.config.room_registry_prune_interval_s
@@ -312,6 +230,21 @@ class HubService:
                 )
                 self._prune_thread.start()
 
+    def _fmt_hash(self, h: Any, *, prefix: int = 12) -> str:
+        if isinstance(h, (bytes, bytearray)):
+            s = bytes(h).hex()
+            return s if prefix <= 0 else s[: min(prefix, len(s))]
+        return "-"
+
+    def _fmt_link_id(self, link: RNS.Link) -> str:
+        lid = getattr(link, "link_id", None)
+        if isinstance(lid, (bytes, bytearray)):
+            return bytes(lid).hex()
+        h = getattr(link, "hash", None)
+        if isinstance(h, (bytes, bytearray)):
+            return bytes(h).hex()
+        return "-"
+
     def _reload_config_and_rooms(
         self,
         link: RNS.Link,
@@ -320,7 +253,7 @@ class HubService:
     ) -> None:
         cfg_path = self.config_manager.get_config_path_for_writes()
         if not cfg_path or not os.path.exists(cfg_path):
-            self._emit_notice(
+            self.message_helper.emit_notice(
                 outgoing, link, room, "reload failed: config_path not set or missing"
             )
             return
@@ -331,17 +264,15 @@ class HubService:
             old_banned = set(self.trust_manager._banned)
             old_registry = dict(self.room_manager._room_registry)
 
-        # Stage config parse
         try:
             data = self.config_manager.load_toml(cfg_path)
             new_cfg = self.config_manager.apply_config_data(old_cfg, data)
         except Exception as e:
-            self._emit_notice(
+            self.message_helper.emit_notice(
                 outgoing, link, room, f"reload failed: config parse error: {e}"
             )
             return
 
-        # Stage identity lists
         try:
             new_trusted = {
                 self._parse_identity_hash(h)
@@ -354,12 +285,11 @@ class HubService:
                 if str(h).strip()
             }
         except Exception as e:
-            self._emit_notice(
+            self.message_helper.emit_notice(
                 outgoing, link, room, f"reload failed: identity list parse error: {e}"
             )
             return
 
-        # Stage room registry parse (strict)
         reg_path = (
             expand_path(str(new_cfg.room_registry_path))
             if new_cfg.room_registry_path
@@ -370,30 +300,29 @@ class HubService:
             invite_timeout_s=new_cfg.room_invite_timeout_s,
         )
         if reg_err is not None:
-            self._emit_notice(outgoing, link, room, f"reload failed: {reg_err}")
+            self.message_helper.emit_notice(
+                outgoing, link, room, f"reload failed: {reg_err}"
+            )
             return
 
         with self._state_lock:
-            # Apply (all-or-nothing)
             self.config = new_cfg
             self.trust_manager._trusted = new_trusted
             self.trust_manager._banned = new_banned
             self.room_manager._room_registry = new_registry
-
-            # Merge registry into live per-room state (for active rooms).
-            # This makes /reload take effect immediately for existing members.
             self.room_manager.merge_registry_into_state(new_registry)
 
         self._ensure_worker_threads()
 
-        # Apply logging changes immediately.
         try:
             configure_logging(self.config)
         except Exception:
             self.log.exception("Failed to reconfigure logging")
 
         cfg_changes = self.config_manager.diff_config_summary(old_cfg, new_cfg)
-        room_changes = self.room_manager.diff_registry_summary(old_registry, new_registry)
+        room_changes = self.room_manager.diff_registry_summary(
+            old_registry, new_registry
+        )
 
         lines: list[str] = []
         lines.append(
@@ -415,7 +344,7 @@ class HubService:
         lines.append("rooms_changes:")
         lines.extend(f"- {x}" for x in room_changes)
 
-        self._emit_notice(outgoing, link, room, "\n".join(lines))
+        self.message_helper.emit_notice(outgoing, link, room, "\n".join(lines))
 
     def _load_registered_rooms_from_registry(self) -> None:
         reg_path = self.room_manager.get_registry_path_for_writes()
@@ -453,18 +382,15 @@ class HubService:
         Use matches list to provide helpful error messages.
         """
         matches = self._find_target_links(token, room=room)
-        
+
         if len(matches) == 1:
-            # Exactly one match - get hash from session
             s = self.session_manager.sessions.get(matches[0])
             ph = s.get("peer") if s else None
             if isinstance(ph, (bytes, bytearray)):
                 return (bytes(ph), matches)
         elif len(matches) > 1:
-            # Ambiguous - return None hash but provide matches for error message
             return (None, matches)
-        
-        # No matches from nick/hash-prefix lookup - try raw hash parse
+
         try:
             h = self._parse_identity_hash(token)
             return (h, [])
@@ -474,7 +400,6 @@ class HubService:
     def _resource_cleanup_loop(self) -> None:
         """Periodically cleanup expired resource expectations."""
         while not self._shutdown.is_set():
-            # Run cleanup every 30 seconds
             time.sleep(30.0)
             if self._shutdown.is_set():
                 break
@@ -524,8 +449,7 @@ class HubService:
                 identified_link, ident
             )
         )
-        
-        # Set up resource callbacks
+
         self.resource_manager.configure_link_callbacks(link)
 
         self.log.info("Link established link_id=%s", self._fmt_link_id(link))
@@ -536,7 +460,9 @@ class HubService:
         banned = False
         peer_hash = None
         with self._state_lock:
-            banned, peer_hash = self.session_manager.on_remote_identified(link, identity)
+            banned, peer_hash = self.session_manager.on_remote_identified(
+                link, identity
+            )
 
         if banned:
             self.log.warning(
@@ -546,7 +472,9 @@ class HubService:
             )
             if self.identity is not None:
                 try:
-                    self._error(link, src=self.identity.hash, text="banned")
+                    self.message_helper.error(
+                        link, src=self.identity.hash, text="banned"
+                    )
                 except Exception:
                     pass
             try:
@@ -560,7 +488,6 @@ class HubService:
         rooms_count = 0
 
         with self._state_lock:
-            # Clean up resource and session state
             self.resource_manager.on_link_closed(link)
             peer, nick, rooms_count = self.session_manager.on_link_closed(link)
 
@@ -572,38 +499,6 @@ class HubService:
             self._fmt_link_id(link),
         )
 
-    def _send(self, link: RNS.Link, env: dict) -> None:
-        """Delegate to message_helper for sending."""
-        self.message_helper.send(link, env)
-
-    def _error(
-        self, link: RNS.Link, src: bytes, text: str, room: str | None = None
-    ) -> None:
-        """Delegate to message_helper for error sending."""
-        self.message_helper.error(link, src, text, room)
-
-    def _emit_error(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]] | None,
-        link: RNS.Link,
-        *,
-        src: bytes,
-        text: str,
-        room: str | None = None,
-    ) -> None:
-        """Delegate to message_helper for error emission."""
-        self.message_helper.emit_error(outgoing, link, src=src, text=text, room=room)
-
-    def _emit_notice(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]] | None,
-        link: RNS.Link,
-        room: str | None,
-        text: str,
-    ) -> None:
-        """Delegate to message_helper for notice emission."""
-        self.message_helper.emit_notice(outgoing, link, room, text)
-
     def _norm_room(self, room: str) -> str:
         r = room.strip().lower()
         if not r:
@@ -612,17 +507,10 @@ class HubService:
             raise ValueError("room name too long")
         return r
 
-    def _refill_and_take(self, link: RNS.Link, cost: float = 1.0) -> bool:
-        """Token bucket rate limiting. Delegates to SessionManager."""
-        return self.session_manager.refill_and_take(link, cost)
-
     def _on_packet(self, link: RNS.Link, data: bytes) -> None:
-        # Packet callbacks can occur concurrently with other link callbacks and
-        # background worker threads. Keep state mutations under the shared lock,
-        # but avoid holding the lock while sending packets via RNS.
         outgoing: list[tuple[RNS.Link, bytes]] = OutgoingList()
         with self._state_lock:
-            self._on_packet_locked(link, data, outgoing)
+            self.router.route_packet(link, data, outgoing)
 
         if self.log.isEnabledFor(logging.DEBUG) and outgoing:
             self.log.debug(
@@ -649,27 +537,13 @@ class HubService:
                     len(payload),
                     exc_info=True,
                 )
-        
-        # Execute any post-send callbacks (e.g., for MOTD after WELCOME)
-        if hasattr(outgoing, '_post_send_callbacks'):
+
+        if hasattr(outgoing, "_post_send_callbacks"):
             for callback in outgoing._post_send_callbacks:  # type: ignore
                 try:
                     callback()
                 except Exception:
                     self.log.exception("Post-send callback failed")
-
-    def _on_packet_locked(
-        self,
-        link: RNS.Link,
-        data: bytes,
-        outgoing: list[tuple[RNS.Link, bytes]],
-    ) -> None:
-        """
-        Handle incoming packet with state lock held.
-        
-        Delegates to MessageRouter for message routing and dispatching.
-        """
-        self.router.route_packet(link, data, outgoing)
 
     def _ping_loop(self) -> None:
         while not self._shutdown.is_set():
@@ -715,6 +589,6 @@ class HubService:
                 ping = make_envelope(T_PING, src=self.identity.hash, body=now)
                 try:
                     self.stats_manager.inc("pings_out")
-                    self._send(link, ping)
+                    self.message_helper.send(link, ping)
                 except Exception:
                     pass

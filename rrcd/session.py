@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 @dataclass
 class _RateState:
     """Token bucket state for rate limiting."""
+
     tokens: float
     last_refill: float
 
@@ -21,7 +22,7 @@ class _RateState:
 class SessionManager:
     """
     Manages session lifecycle for RRC hub connections.
-    
+
     This class is responsible for:
     - Session creation and initialization
     - Session state management (nicknames, rooms, capabilities)
@@ -34,21 +35,15 @@ class SessionManager:
     def __init__(self, hub: HubService) -> None:
         self.hub = hub
         self.log = logging.getLogger("rrcd.session")
-
-        # Session state storage (keyed by RNS.Link)
         self.sessions: dict[RNS.Link, dict[str, Any]] = {}
-        
-        # Rate limiting state
         self._rate: dict[RNS.Link, _RateState] = {}
-        
-        # Secondary indexes for efficient lookups
         self._index_by_hash: dict[bytes, RNS.Link] = {}  # identity hash -> link
         self._index_by_nick: dict[str, set[RNS.Link]] = {}  # normalized nick -> links
 
     def on_link_established(self, link: RNS.Link) -> None:
         """
         Handle new link establishment.
-        
+
         Creates session state and sets up callbacks.
         Must be called with state lock held.
         """
@@ -73,7 +68,7 @@ class SessionManager:
     ) -> tuple[bool, bytes | None]:
         """
         Handle remote identity being established.
-        
+
         Returns:
             (is_banned, peer_hash) tuple
         Must be called with state lock held.
@@ -85,20 +80,18 @@ class SessionManager:
         if identity is not None:
             peer_hash = identity.hash
             sess["peer"] = peer_hash
-            
-            # Update hash index
+
             self._index_by_hash[bytes(peer_hash)] = link
 
-            # Check if banned
             banned = self.hub.trust_manager.is_banned(bytes(peer_hash))
-            
+
             if not banned:
                 self.log.info(
                     "Remote identified peer=%s link_id=%s",
                     self.hub._fmt_hash(peer_hash),
                     self.hub._fmt_link_id(link),
                 )
-            
+
             return banned, peer_hash
 
         return False, None
@@ -106,7 +99,7 @@ class SessionManager:
     def on_link_closed(self, link: RNS.Link) -> tuple[bytes | None, str | None, int]:
         """
         Handle link closure and cleanup.
-        
+
         Returns:
             (peer_hash, nick, rooms_count) for logging
         Must be called with state lock held.
@@ -121,14 +114,12 @@ class SessionManager:
         nick = sess.get("nick")
         rooms_count = len(sess.get("rooms") or ())
 
-        # Clean up indexes
         if isinstance(peer, (bytes, bytearray)):
             self._index_by_hash.pop(bytes(peer), None)
 
         if nick:
             self.update_nick_index(link, nick, None)
 
-        # Clean up room memberships
         for room in list(sess["rooms"]):
             self.hub.room_manager.remove_member(room, link)
 
@@ -139,10 +130,9 @@ class SessionManager:
     ) -> None:
         """
         Update nickname index when a nick changes.
-        
+
         Must be called with state lock held.
         """
-        # Remove old nick mapping
         if old_nick:
             old_key = old_nick.strip().lower()
             if old_key in self._index_by_nick:
@@ -150,7 +140,6 @@ class SessionManager:
                 if not self._index_by_nick[old_key]:
                     self._index_by_nick.pop(old_key, None)
 
-        # Add new nick mapping
         if new_nick:
             new_key = new_nick.strip().lower()
             self._index_by_nick.setdefault(new_key, set()).add(link)
@@ -158,10 +147,10 @@ class SessionManager:
     def refill_and_take(self, link: RNS.Link, cost: float = 1.0) -> bool:
         """
         Token bucket rate limiting.
-        
+
         Refills tokens based on elapsed time and attempts to take `cost` tokens.
         Returns True if tokens were available and taken, False if rate limited.
-        
+
         Must be called with state lock held.
         """
         state = self._rate.get(link)
@@ -197,7 +186,7 @@ class SessionManager:
     def clear_all(self) -> list[RNS.Link]:
         """
         Clear all sessions and return list of links for teardown.
-        
+
         Must be called with state lock held.
         """
         links = list(self.sessions.keys())
@@ -212,7 +201,7 @@ class SessionManager:
         total = len(self.sessions)
         welcomed = sum(1 for s in self.sessions.values() if s.get("welcomed"))
         identified = sum(1 for s in self.sessions.values() if s.get("peer") is not None)
-        
+
         return {
             "total": total,
             "welcomed": welcomed,
@@ -232,39 +221,35 @@ class SessionManager:
     ) -> None:
         """
         Send WELCOME message to a client and optionally MOTD.
-        
+
         This handles:
         - Setting session as welcomed
         - Updating nick index if needed
         - Queueing WELCOME message
         - Setting up MOTD callback for post-send delivery
-        
+
         Must be called with state lock held.
         """
         from .constants import RES_KIND_MOTD, T_NOTICE
-        
+
         sess = self.sessions.get(link)
         if sess is None:
             return
-        
-        # Update nick index if nick changed
+
         if old_nick != new_nick:
             self.update_nick_index(link, old_nick, new_nick)
-        
-        # Mark session as welcomed
+
         sess["welcomed"] = True
-        
-        # Queue WELCOME message
+
         self.hub.message_helper.queue_welcome(
             outgoing,
             link,
             peer_hash=peer_hash,
             motd=self.hub.config.greeting,
         )
-        
-        # Send MOTD after WELCOME (outside of outgoing queue to enable resource transfer)
-        # The outgoing queue will be sent first, then this callback will send the MOTD
+
         if self.hub.config.greeting:
+
             def send_motd():
                 self.hub.message_helper.send_text_smart(
                     link,
@@ -273,7 +258,7 @@ class SessionManager:
                     room=None,
                     kind=RES_KIND_MOTD,
                 )
-            # Store callback to be executed after outgoing packets are sent
-            if not hasattr(outgoing, '_post_send_callbacks'):
+
+            if not hasattr(outgoing, "_post_send_callbacks"):
                 outgoing._post_send_callbacks = []  # type: ignore
             outgoing._post_send_callbacks.append(send_motd)  # type: ignore

@@ -30,7 +30,7 @@ class CommandHandler:
         outgoing: list[tuple[RNS.Link, bytes]] | None = None,
     ) -> bool:
         """Handle an operator command.
-        
+
         Returns True if it was a recognized command (handled). Unknown commands
         return False so the message can be forwarded as normal chat.
         """
@@ -55,11 +55,9 @@ class CommandHandler:
                         room=None,
                     )
                 return True
-            # Hub-level command - send responses without room field
             self.hub._reload_config_and_rooms(link, None, outgoing)
             return True
 
-        # Global/server-operator commands
         if cmd == "stats":
             if not self.hub.trust_manager.is_server_op(peer_hash):
                 if self.hub.identity is not None:
@@ -71,20 +69,19 @@ class CommandHandler:
                         room=None,
                     )
                 return True
-            # Send response without room field for hub-level command
-            self.hub.message_helper.emit_notice(outgoing, link, None, self.hub.stats_manager.format_stats())
+            self.hub.message_helper.emit_notice(
+                outgoing, link, None, self.hub.stats_manager.format_stats()
+            )
             return True
 
         if cmd == "list":
-            # List all registered, non-private rooms with their topics
             with self.hub._state_lock:
                 registered_rooms = []
                 for room_name, st in self.hub.room_manager._room_state.items():
                     if st.get("registered") and not st.get("private"):
                         topic = st.get("topic")
                         registered_rooms.append((room_name, topic))
-                
-                # Also check room registry for rooms not currently in room_state
+
                 for room_name, reg in self.hub.room_manager._room_registry.items():
                     if room_name not in self.hub.room_manager._room_state:
                         if not reg.get("private"):
@@ -92,20 +89,20 @@ class CommandHandler:
                             registered_rooms.append((room_name, topic))
 
             if not registered_rooms:
-                self.hub.message_helper.emit_notice(outgoing, link, None, "No public rooms registered")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, "No public rooms registered"
+                )
                 return True
 
-            # Sort rooms alphabetically
             registered_rooms.sort(key=lambda x: x[0])
-            
-            # Format room list with topics
+
             lines = ["Registered public rooms:"]
             for room_name, topic in registered_rooms:
                 if topic:
                     lines.append(f"  {room_name} - {topic}")
                 else:
                     lines.append(f"  {room_name}")
-            
+
             self.hub.message_helper.emit_notice(outgoing, link, None, "\n".join(lines))
             return True
 
@@ -114,23 +111,30 @@ class CommandHandler:
             if len(parts) >= 2:
                 target_room = parts[1]
             if not isinstance(target_room, str) or not target_room:
-                self.hub.message_helper.emit_notice(outgoing, link, None, "usage: /who [room]")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, "usage: /who [room]"
+                )
                 return True
             try:
                 r = self.hub._norm_room(target_room)
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
 
-            # Check if room is private - only server operators can see private rooms
             st = self.hub.room_manager._room_state_get(r)
             if st and st.get("private"):
                 if not self.hub.trust_manager.is_server_op(peer_hash):
-                    self.hub.message_helper.emit_notice(outgoing, link, None, f"room {r} is private")
+                    self.hub.message_helper.emit_notice(
+                        outgoing, link, None, f"room {r} is private"
+                    )
                     return True
 
             members = []
-            for other in sorted(self.hub.room_manager.get_room_members(r), key=lambda x: id(x)):
+            for other in sorted(
+                self.hub.room_manager.get_room_members(r), key=lambda x: id(x)
+            ):
                 s = self.hub.session_manager.sessions.get(other)
                 if not s:
                     continue
@@ -141,7 +145,6 @@ class CommandHandler:
                     members.append(f"{nick} ({ident[:12]})")
                 else:
                     members.append(ident)
-            # Send response without room field for hub-level query
             self.hub.message_helper.emit_notice(
                 outgoing,
                 link,
@@ -161,7 +164,9 @@ class CommandHandler:
             try:
                 r = self.hub._norm_room(target_room)
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, room, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, f"bad room: {e}"
+                )
                 return True
 
             if not self.hub.room_manager.is_room_op(r, peer_hash):
@@ -177,23 +182,27 @@ class CommandHandler:
 
             target_link = self._find_target_link(target, room=r)
             if target_link is None:
-                # Check if ambiguous or just not found
                 all_matches = self._find_target_links(target, room=r)
                 self.hub.message_helper.emit_notice(
-                    outgoing, link, room, self._format_ambiguous_targets(target, all_matches)
+                    outgoing,
+                    link,
+                    room,
+                    self._format_ambiguous_targets(target, all_matches),
                 )
                 return True
 
             tsess = self.hub.session_manager.sessions.get(target_link)
             if not tsess or r not in tsess.get("rooms", set()):
-                self.hub.message_helper.emit_notice(outgoing, link, room, "target not in room")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, "target not in room"
+                )
                 return True
 
             tsess["rooms"].discard(r)
             if self.hub.room_manager.get_room_members(r):
                 self.hub.room_manager.rooms[r].discard(target_link)
                 if not self.hub.room_manager.rooms[r]:
-                    pass  # room cleanup handled by room_manager
+                    pass
 
             if self.hub.identity is not None:
                 self._emit_error(
@@ -203,7 +212,9 @@ class CommandHandler:
                     text=f"kicked from {r}",
                     room=r,
                 )
-            self.hub.message_helper.emit_notice(outgoing, link, room, f"kicked {target} from {r}")
+            self.hub.message_helper.emit_notice(
+                outgoing, link, room, f"kicked {target} from {r}"
+            )
             return True
 
         if cmd == "kline":
@@ -218,7 +229,6 @@ class CommandHandler:
                     )
                 return True
 
-            # Hub-level command - all responses without room field
             if len(parts) < 2:
                 self.hub.message_helper.emit_notice(
                     outgoing,
@@ -263,65 +273,86 @@ class CommandHandler:
                     ph = tsess.get("peer") if tsess else None
                     if isinstance(ph, (bytes, bytearray)):
                         self.hub.trust_manager.add_ban(bytes(ph))
-                        self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
+                        self.hub.trust_manager.persist_banned_identities_to_config(
+                            link, None, outgoing
+                        )
                     try:
                         target_link.teardown()
                     except Exception:
                         pass
-                    self.hub.message_helper.emit_notice(outgoing, link, None, f"kline added for {target}")
-                    return True
-
-                # Not found as active link - check if ambiguous or try as raw hash
-                all_matches = self._find_target_links(target, room=None)
-                if all_matches:
-                    # Ambiguous
                     self.hub.message_helper.emit_notice(
-                        outgoing, link, None, self._format_ambiguous_targets(target, all_matches)
+                        outgoing, link, None, f"kline added for {target}"
                     )
                     return True
 
-                # Try as raw hash
+                all_matches = self._find_target_links(target, room=None)
+                if all_matches:
+                    self.hub.message_helper.emit_notice(
+                        outgoing,
+                        link,
+                        None,
+                        self._format_ambiguous_targets(target, all_matches),
+                    )
+                    return True
+
                 try:
                     h = self.hub._parse_identity_hash(target)
                 except Exception as e:
-                    self.hub.message_helper.emit_notice(outgoing, link, None, f"bad identity hash: {e}")
+                    self.hub.message_helper.emit_notice(
+                        outgoing, link, None, f"bad identity hash: {e}"
+                    )
                     return True
                 self.hub.trust_manager.add_ban(h)
-                self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"kline added for {h.hex()}")
+                self.hub.trust_manager.persist_banned_identities_to_config(
+                    link, None, outgoing
+                )
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"kline added for {h.hex()}"
+                )
                 return True
 
-            # op == "del"
             try:
                 h = self.hub._parse_identity_hash(target)
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad identity hash: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad identity hash: {e}"
+                )
                 return True
 
             if self.hub.trust_manager.is_banned(h):
                 self.hub.trust_manager.remove_ban(h)
-                self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"kline removed for {h.hex()}")
+                self.hub.trust_manager.persist_banned_identities_to_config(
+                    link, None, outgoing
+                )
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"kline removed for {h.hex()}"
+                )
             else:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"not klined: {h.hex()}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"not klined: {h.hex()}"
+                )
             return True
 
-        # Room-scoped moderation and maintenance
         if cmd == "register":
             if len(parts) < 2:
-                self.hub.message_helper.emit_notice(outgoing, link, None, "usage: /register <room>")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, "usage: /register <room>"
+                )
                 return True
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
-            # Registration rules: requester must be in the room and must be the founder.
-            # (No server-op override by design.)
             if (
                 not room
                 or self.hub._norm_room(room) != r
-                or r not in self.hub.session_manager.sessions.get(link, {}).get("rooms", set())
+                or r
+                not in self.hub.session_manager.sessions.get(link, {}).get(
+                    "rooms", set()
+                )
             ):
                 self.hub.message_helper.emit_notice(
                     outgoing, link, room, "must be present in the room to register it"
@@ -330,8 +361,9 @@ class CommandHandler:
 
             st = self.hub.room_manager._room_state_ensure(r)
 
-            # Clean up expired invites (best-effort).
-            if self.hub.room_manager.prune_expired_invites(r) and bool(st.get("registered")):
+            if self.hub.room_manager.prune_expired_invites(r) and bool(
+                st.get("registered")
+            ):
                 self.hub.room_manager.persist_room_state(link, r)
             founder = st.get("founder")
             if not (
@@ -353,51 +385,64 @@ class CommandHandler:
                 )
                 return True
             st["registered"] = True
-            # Default modes for registered rooms: +nrt
             st["no_outside_msgs"] = True
             st["topic_ops_only"] = True
             if isinstance(founder, (bytes, bytearray)):
                 st.setdefault("ops", set()).add(bytes(founder))
             self.hub.room_manager.touch_room(r)
 
-            # Ensure registry mirrors registered rooms.
             self.hub.room_manager._room_registry[r] = {
-                "founder": bytes(founder)
-                if isinstance(founder, (bytes, bytearray))
-                else None,
+                "founder": (
+                    bytes(founder) if isinstance(founder, (bytes, bytearray)) else None
+                ),
                 "registered": True,
                 "topic": st.get("topic"),
                 "moderated": bool(st.get("moderated", False)),
-                "ops": set(st.get("ops", set()))
-                if isinstance(st.get("ops"), set)
-                else set(),
-                "voiced": set(st.get("voiced", set()))
-                if isinstance(st.get("voiced"), set)
-                else set(),
-                "bans": set(st.get("bans", set()))
-                if isinstance(st.get("bans"), set)
-                else set(),
+                "ops": (
+                    set(st.get("ops", set()))
+                    if isinstance(st.get("ops"), set)
+                    else set()
+                ),
+                "voiced": (
+                    set(st.get("voiced", set()))
+                    if isinstance(st.get("voiced"), set)
+                    else set()
+                ),
+                "bans": (
+                    set(st.get("bans", set()))
+                    if isinstance(st.get("bans"), set)
+                    else set()
+                ),
                 "last_used_ts": st.get("last_used_ts"),
             }
 
             self.hub.room_manager.persist_room_state(link, r)
-            self.hub.message_helper.emit_notice(outgoing, link, room, f"registered room {r}")
+            self.hub.message_helper.emit_notice(
+                outgoing, link, room, f"registered room {r}"
+            )
             return True
 
         if cmd == "unregister":
             if len(parts) < 2:
-                self.hub.message_helper.emit_notice(outgoing, link, None, "usage: /unregister <room>")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, "usage: /unregister <room>"
+                )
                 return True
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
 
             if (
                 not room
                 or self.hub._norm_room(room) != r
-                or r not in self.hub.session_manager.sessions.get(link, {}).get("rooms", set())
+                or r
+                not in self.hub.session_manager.sessions.get(link, {}).get(
+                    "rooms", set()
+                )
             ):
                 self.hub.message_helper.emit_notice(
                     outgoing, link, room, "must be present in the room to unregister it"
@@ -420,26 +465,35 @@ class CommandHandler:
                 return True
 
             if not st.get("registered"):
-                self.hub.message_helper.emit_notice(outgoing, link, room, f"room {r} is not registered")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, f"room {r} is not registered"
+                )
                 return True
 
             st["registered"] = False
             self.hub.room_manager._room_registry.pop(r, None)
-            self.hub._delete_room_from_registry(link, r)
-            # Drop state if empty.
-            if not self.hub.room_manager.get_room_members(r) or not self.hub.room_manager.get_room_members(r):
+            self.hub.room_manager.delete_room_from_registry(link, r)
+            if not self.hub.room_manager.get_room_members(
+                r
+            ) or not self.hub.room_manager.get_room_members(r):
                 self.hub.room_manager._room_state.pop(r, None)
-            self.hub.message_helper.emit_notice(outgoing, link, room, f"unregistered room {r}")
+            self.hub.message_helper.emit_notice(
+                outgoing, link, room, f"unregistered room {r}"
+            )
             return True
 
         if cmd == "topic":
             if len(parts) < 2:
-                self.hub.message_helper.emit_notice(outgoing, link, None, "usage: /topic <room> [topic]")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, "usage: /topic <room> [topic]"
+                )
                 return True
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
             st = self.hub.room_manager._room_state_ensure(r)
             if len(parts) == 2:
@@ -469,7 +523,6 @@ class CommandHandler:
             st["topic"] = topic if topic else None
             self.hub.room_manager.touch_room(r)
             self.hub.room_manager.persist_room_state(link, r)
-            # Broadcast topic change to current members.
             for other in list(self.hub.room_manager.get_room_members(r)):
                 self.hub.message_helper.emit_notice(
                     outgoing,
@@ -488,7 +541,9 @@ class CommandHandler:
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
             if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
@@ -500,14 +555,19 @@ class CommandHandler:
                         room=r,
                     )
                 return True
-            
-            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(parts[2], room=r)
+
+            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(
+                parts[2], room=r
+            )
             if target_hash is None:
                 self.hub.message_helper.emit_notice(
-                    outgoing, link, room, self._format_ambiguous_targets(parts[2], all_matches)
+                    outgoing,
+                    link,
+                    room,
+                    self._format_ambiguous_targets(parts[2], all_matches),
                 )
                 return True
-            
+
             st = self.hub.room_manager._room_state_ensure(r)
             founder = st.get("founder")
             founder_b = (
@@ -523,16 +583,22 @@ class CommandHandler:
                     ops.add(target_hash)
                     self.hub.room_manager.touch_room(r)
                     self.hub.room_manager.persist_room_state(link, r)
-                    self.hub.message_helper.emit_notice(outgoing, link, room, f"op granted in {r}")
+                    self.hub.message_helper.emit_notice(
+                        outgoing, link, room, f"op granted in {r}"
+                    )
                     return True
                 else:
                     if founder_b is not None and target_hash == founder_b:
-                        self.hub.message_helper.emit_notice(outgoing, link, room, "cannot deop founder")
+                        self.hub.message_helper.emit_notice(
+                            outgoing, link, room, "cannot deop founder"
+                        )
                         return True
                     ops.discard(target_hash)
                     self.hub.room_manager.touch_room(r)
                     self.hub.room_manager.persist_room_state(link, r)
-                    self.hub.message_helper.emit_notice(outgoing, link, room, f"op removed in {r}")
+                    self.hub.message_helper.emit_notice(
+                        outgoing, link, room, f"op removed in {r}"
+                    )
                     return True
 
             voiced = st.setdefault("voiced", set())
@@ -543,13 +609,17 @@ class CommandHandler:
                 voiced.add(target_hash)
                 self.hub.room_manager.touch_room(r)
                 self.hub.room_manager.persist_room_state(link, r)
-                self.hub.message_helper.emit_notice(outgoing, link, room, f"voice granted in {r}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, f"voice granted in {r}"
+                )
                 return True
             else:
                 voiced.discard(target_hash)
                 self.hub.room_manager.touch_room(r)
                 self.hub.room_manager.persist_room_state(link, r)
-                self.hub.message_helper.emit_notice(outgoing, link, room, f"voice removed in {r}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, f"voice removed in {r}"
+                )
                 return True
 
         if cmd == "mode":
@@ -564,7 +634,9 @@ class CommandHandler:
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
             if not self.hub.room_manager.is_room_op(r, peer_hash):
                 if self.hub.identity is not None:
@@ -623,7 +695,9 @@ class CommandHandler:
                         return True
                     key = " ".join(parts[3:]).strip()
                     if not key:
-                        self.hub.message_helper.emit_notice(outgoing, link, room, "key must not be empty")
+                        self.hub.message_helper.emit_notice(
+                            outgoing, link, room, "key must not be empty"
+                        )
                         return True
                     st["key"] = key
                 else:
@@ -649,10 +723,15 @@ class CommandHandler:
                     )
                     return True
 
-                target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(parts[3], room=r)
+                target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(
+                    parts[3], room=r
+                )
                 if target_hash is None:
                     self.hub.message_helper.emit_notice(
-                        outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
+                        outgoing,
+                        link,
+                        room,
+                        self._format_ambiguous_targets(parts[3], all_matches),
                     )
                     return True
 
@@ -729,7 +808,9 @@ class CommandHandler:
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
 
             op = parts[2].strip().lower()
@@ -737,7 +818,9 @@ class CommandHandler:
                 st = self.hub.room_manager._room_state_ensure(r)
                 bans = st.get("bans")
                 if not isinstance(bans, set) or not bans:
-                    self.hub.message_helper.emit_notice(outgoing, link, room, f"no bans in {r}")
+                    self.hub.message_helper.emit_notice(
+                        outgoing, link, room, f"no bans in {r}"
+                    )
                     return True
                 items = sorted(
                     bytes(x).hex() for x in bans if isinstance(x, (bytes, bytearray))
@@ -773,10 +856,15 @@ class CommandHandler:
                     )
                 return True
 
-            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(parts[3], room=r)
+            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(
+                parts[3], room=r
+            )
             if target_hash is None:
                 self.hub.message_helper.emit_notice(
-                    outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
+                    outgoing,
+                    link,
+                    room,
+                    self._format_ambiguous_targets(parts[3], all_matches),
                 )
                 return True
 
@@ -791,7 +879,6 @@ class CommandHandler:
                 self.hub.room_manager.touch_room(r)
                 self.hub.room_manager.persist_room_state(link, r)
 
-                # If currently present in room, remove them.
                 for other in list(self.hub.room_manager.get_room_members(r)):
                     s = self.hub.session_manager.sessions.get(other)
                     ph = s.get("peer") if s else None
@@ -806,15 +893,22 @@ class CommandHandler:
                                 text=f"banned from {r}",
                                 room=r,
                             )
-                if self.hub.room_manager.get_room_members(r) and not self.hub.room_manager.rooms[r]:
-                    pass  # room cleanup handled by room_manager
-                self.hub.message_helper.emit_notice(outgoing, link, room, f"ban added in {r}")
+                if (
+                    self.hub.room_manager.get_room_members(r)
+                    and not self.hub.room_manager.rooms[r]
+                ):
+                    pass
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, room, f"ban added in {r}"
+                )
                 return True
 
             bans.discard(target_hash)
             self.hub.room_manager.touch_room(r)
             self.hub.room_manager.persist_room_state(link, r)
-            self.hub.message_helper.emit_notice(outgoing, link, room, f"ban removed in {r}")
+            self.hub.message_helper.emit_notice(
+                outgoing, link, room, f"ban removed in {r}"
+            )
             return True
 
         if cmd == "invite":
@@ -830,7 +924,9 @@ class CommandHandler:
             try:
                 r = self.hub._norm_room(parts[1])
             except Exception as e:
-                self.hub.message_helper.emit_notice(outgoing, link, None, f"bad room: {e}")
+                self.hub.message_helper.emit_notice(
+                    outgoing, link, None, f"bad room: {e}"
+                )
                 return True
 
             if not self.hub.room_manager.is_room_op(r, peer_hash):
@@ -852,7 +948,6 @@ class CommandHandler:
                 invited = {}
                 st["invited"] = invited
 
-            # Drop expired entries before operating.
             pruned = self.hub.room_manager.prune_expired_invites(r)
 
             if op == "list":
@@ -902,7 +997,6 @@ class CommandHandler:
                 token = parts[3]
                 target_link = self._find_target_link(token, room=None)
                 if target_link is None:
-                    # Check if ambiguous or just not found
                     all_matches = self._find_target_links(token, room=None)
                     if self.hub.identity is not None:
                         self._emit_error(
@@ -928,7 +1022,6 @@ class CommandHandler:
                     return True
                 target_hash = bytes(ph)
 
-                # Always send the invite as a NOTICE so the user can choose to join.
                 key = st.get("key")
                 is_keyed = isinstance(key, str) and bool(key)
                 is_invite_only = bool(st.get("invite_only", False))
@@ -945,7 +1038,6 @@ class CommandHandler:
                         outgoing, target_link, r, f"You have been invited to join {r}."
                     )
 
-                # Persist an expiring invite only when it has semantics: +k bypass and/or +i allow.
                 if is_keyed or is_invite_only:
                     ttl = (
                         float(self.hub.config.room_invite_timeout_s)
@@ -970,10 +1062,15 @@ class CommandHandler:
                     )
                 return True
 
-            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(parts[3], room=None)
+            target_hash, all_matches = self.hub._resolve_identity_hash_with_matches(
+                parts[3], room=None
+            )
             if target_hash is None:
                 self.hub.message_helper.emit_notice(
-                    outgoing, link, room, self._format_ambiguous_targets(parts[3], all_matches)
+                    outgoing,
+                    link,
+                    room,
+                    self._format_ambiguous_targets(parts[3], all_matches),
                 )
                 return True
 
@@ -981,12 +1078,13 @@ class CommandHandler:
                 invited.pop(target_hash, None)
             self.hub.room_manager.touch_room(r)
             self.hub.room_manager.persist_room_state(link, r)
-            self.hub.message_helper.emit_notice(outgoing, link, room, f"invite removed in {r}")
+            self.hub.message_helper.emit_notice(
+                outgoing, link, room, f"invite removed in {r}"
+            )
             return True
 
         return False
 
-    # Helper methods
     def _find_target_link(self, token: str, room: str | None = None) -> RNS.Link | None:
         """Find a link by nick or identity hash prefix. Uses indexes for O(1) lookups.
         Returns the link if exactly one match, None otherwise.
@@ -1004,7 +1102,6 @@ class CommandHandler:
         if not t:
             return []
 
-        # If it's hex-like, treat as an identity hash prefix.
         hex_candidate = t[2:] if t.startswith("0x") else t
         if (
             all(c in "0123456789abcdef" for c in hex_candidate)
@@ -1014,29 +1111,30 @@ class CommandHandler:
                 prefix = bytes.fromhex(hex_candidate)
             except Exception:
                 prefix = None
-            
+
             if prefix is not None:
                 with self.hub._state_lock:
-                    # Search hash index for matching prefixes
                     matches: list[RNS.Link] = []
-                    for peer_hash, candidate_link in self.hub.session_manager._index_by_hash.items():
+                    for (
+                        peer_hash,
+                        candidate_link,
+                    ) in self.hub.session_manager._index_by_hash.items():
                         if peer_hash.startswith(prefix):
-                            # Check room membership if specified
                             if room is not None:
-                                sess = self.hub.session_manager.sessions.get(candidate_link)
+                                sess = self.hub.session_manager.sessions.get(
+                                    candidate_link
+                                )
                                 if sess and room not in sess.get("rooms", set()):
                                     continue
                             matches.append(candidate_link)
-                
+
                 return matches
 
-        # Otherwise treat as nickname - use nick index for O(1) lookup
         with self.hub._state_lock:
             candidate_links = self.hub.session_manager._index_by_nick.get(t, set())
             if not candidate_links:
                 return []
-            
-            # Filter by room membership if specified
+
             if room is not None:
                 matches = []
                 for candidate_link in candidate_links:
@@ -1045,16 +1143,14 @@ class CommandHandler:
                         matches.append(candidate_link)
             else:
                 matches = list(candidate_links)
-        
+
         return matches
 
-    def _format_ambiguous_targets(
-        self, token: str, matches: list[RNS.Link]
-    ) -> str:
+    def _format_ambiguous_targets(self, token: str, matches: list[RNS.Link]) -> str:
         """Format a helpful message when target lookup is ambiguous."""
         if not matches:
             return f"target '{token}' not found"
-        
+
         with self.hub._state_lock:
             items = []
             for match_link in matches:
@@ -1066,10 +1162,10 @@ class CommandHandler:
                 hash_str = self.hub._fmt_hash(peer, prefix=16) if peer else "?"
                 nick_str = f"nick={nick!r}" if nick else "(no nick)"
                 items.append(f"{hash_str} {nick_str}")
-        
+
         if len(items) == 0:
             return f"target '{token}' not found"
-        
+
         return (
             f"ambiguous: '{token}' matches {len(items)} identities:\n"
             + "\n".join(f"  - {item}" for item in items)
@@ -1087,9 +1183,9 @@ class CommandHandler:
             return
         env = make_envelope(T_NOTICE, src=self.hub.identity.hash, room=room, body=text)
         if outgoing is None:
-            self.hub._send(link, env)
+            self.hub.message_helper.send(link, env)
         else:
-            self.hub._queue_env(outgoing, link, env)
+            self.hub.message_helper.queue_env(outgoing, link, env)
 
     def _emit_error(
         self,
@@ -1103,6 +1199,6 @@ class CommandHandler:
         self.hub.stats_manager.inc("errors_sent")
         env = make_envelope(T_ERROR, src=src, room=room, body=text)
         if outgoing is None:
-            self.hub._send(link, env)
+            self.hub.message_helper.send(link, env)
         else:
-            self.hub._queue_env(outgoing, link, env)
+            self.hub.message_helper.queue_env(outgoing, link, env)
