@@ -96,7 +96,7 @@ class MessageRouter:
                     self.hub._fmt_link_id(link),
                 )
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text="rate limited"
                 )
             return
@@ -114,7 +114,7 @@ class MessageRouter:
                 e,
             )
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text=f"bad message: {e}"
                 )
             return
@@ -176,7 +176,7 @@ class MessageRouter:
 
         if not self.hub.config.enable_resource_transfer:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -187,7 +187,7 @@ class MessageRouter:
 
         if not isinstance(body, dict):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -205,7 +205,7 @@ class MessageRouter:
         # Validate required fields
         if not isinstance(rid, (bytes, bytearray)):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -216,7 +216,7 @@ class MessageRouter:
 
         if not isinstance(kind, str) or not kind:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -227,7 +227,7 @@ class MessageRouter:
 
         if not isinstance(size, int) or size < 0:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -239,7 +239,7 @@ class MessageRouter:
         # Check size limit
         if size > self.hub.config.max_resource_bytes:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -251,7 +251,7 @@ class MessageRouter:
         # Validate optional fields
         if sha256 is not None and not isinstance(sha256, (bytes, bytearray)):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -274,7 +274,7 @@ class MessageRouter:
             room=room,
         ):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -297,7 +297,7 @@ class MessageRouter:
 
         if t != T_HELLO:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text="send HELLO first"
                 )
             return
@@ -347,7 +347,7 @@ class MessageRouter:
         # The outgoing queue will be sent first, then this callback will send the MOTD
         if self.hub.config.greeting:
             def send_motd():
-                self.hub._send_text_smart(
+                self.hub.message_helper.send_text_smart(
                     link,
                     msg_type=T_NOTICE,
                     text=self.hub.config.greeting,
@@ -440,7 +440,7 @@ class MessageRouter:
         self.hub.stats_manager.inc("joins")
         if not isinstance(room, str) or not room:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -450,7 +450,7 @@ class MessageRouter:
 
         if len(sess["rooms"]) >= int(self.hub.config.max_rooms_per_session):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text="too many rooms"
                 )
             return
@@ -459,7 +459,7 @@ class MessageRouter:
             r = self.hub._norm_room(room)
         except Exception as e:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text=str(e)
                 )
             return
@@ -475,7 +475,7 @@ class MessageRouter:
             is_invited = self.hub.room_manager.is_invited(r, peer_hash)
             if not self.hub.room_manager.is_room_op(r, peer_hash) and not is_invited:
                 if self.hub.identity is not None:
-                    self.hub._emit_error(
+                    self.hub.message_helper.emit_error(
                         outgoing,
                         link,
                         src=self.hub.identity.hash,
@@ -492,7 +492,7 @@ class MessageRouter:
                 provided = body if isinstance(body, str) else None
                 if provided != key:
                     if self.hub.identity is not None:
-                        self.hub._emit_error(
+                        self.hub.message_helper.emit_error(
                             outgoing,
                             link,
                             src=self.hub.identity.hash,
@@ -504,7 +504,7 @@ class MessageRouter:
         # Room bans are room-local and apply to JOIN.
         if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -544,7 +544,7 @@ class MessageRouter:
         joined = make_envelope(
             T_JOINED, src=self.hub.identity.hash, room=r, body=joined_body
         )
-        self.hub._queue_env(outgoing, link, joined)
+        self.hub.message_helper.queue_env(outgoing, link, joined)
 
         # Consume invite on successful join.
         try:
@@ -562,7 +562,7 @@ class MessageRouter:
             mode_txt = self.hub.room_manager.get_room_mode_string(r)
             topic_txt = topic if topic else "(none)"
             reg_txt = "registered" if registered else "unregistered"
-            self.hub._emit_notice(
+            self.hub.message_helper.emit_notice(
                 outgoing,
                 link,
                 r,
@@ -585,7 +585,7 @@ class MessageRouter:
         self.hub.stats_manager.inc("parts")
         if not isinstance(room, str) or not room:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -597,7 +597,7 @@ class MessageRouter:
             r = self.hub._norm_room(room)
         except Exception as e:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text=str(e)
                 )
             return
@@ -630,7 +630,7 @@ class MessageRouter:
             parted = make_envelope(
                 T_PARTED, src=self.hub.identity.hash, room=r, body=parted_body
             )
-            self.hub._queue_env(outgoing, link, parted)
+            self.hub.message_helper.queue_env(outgoing, link, parted)
 
         self.log.info(
             "PART peer=%s nick=%r room=%s link_id=%s",
@@ -679,7 +679,7 @@ class MessageRouter:
                     return
                 # Unrecognized slash command - send error
                 if self.hub.identity is not None:
-                    self.hub._emit_error(
+                    self.hub.message_helper.emit_error(
                         outgoing,
                         link,
                         src=self.hub.identity.hash,
@@ -693,7 +693,7 @@ class MessageRouter:
         if t == T_MSG:
             if not isinstance(room, str) or not room:
                 if self.hub.identity is not None:
-                    self.hub._emit_error(
+                    self.hub.message_helper.emit_error(
                         outgoing,
                         link,
                         src=self.hub.identity.hash,
@@ -709,7 +709,7 @@ class MessageRouter:
             r = self.hub._norm_room(room)
         except Exception as e:
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing, link, src=self.hub.identity.hash, text=str(e)
                 )
             return
@@ -725,7 +725,7 @@ class MessageRouter:
 
             if st is None:
                 if self.hub.identity is not None:
-                    self.hub._emit_error(
+                    self.hub.message_helper.emit_error(
                         outgoing,
                         link,
                         src=self.hub.identity.hash,
@@ -736,7 +736,7 @@ class MessageRouter:
 
             if bool(st.get("no_outside_msgs", False)):
                 if self.hub.identity is not None:
-                    self.hub._emit_error(
+                    self.hub.message_helper.emit_error(
                         outgoing,
                         link,
                         src=self.hub.identity.hash,
@@ -748,7 +748,7 @@ class MessageRouter:
         # Per-room moderation: bans and moderated mode.
         if self.hub.room_manager.is_room_banned(r, peer_hash):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -758,7 +758,7 @@ class MessageRouter:
             return
         if self.hub.room_manager.is_room_moderated(r) and not self.hub.room_manager.is_room_voiced(r, peer_hash):
             if self.hub.identity is not None:
-                self.hub._emit_error(
+                self.hub.message_helper.emit_error(
                     outgoing,
                     link,
                     src=self.hub.identity.hash,
@@ -801,7 +801,7 @@ class MessageRouter:
 
         payload = encode(env)
         for other in list(self.hub.room_manager.get_room_members(r)):
-            self.hub._queue_payload(outgoing, other, payload)
+            self.hub.message_helper.queue_payload(outgoing, other, payload)
 
         if self.log.isEnabledFor(logging.DEBUG):
             self.log.debug(
@@ -832,7 +832,7 @@ class MessageRouter:
         if self.hub.identity is not None:
             pong = make_envelope(T_PONG, src=self.hub.identity.hash, body=body)
             self.hub.stats_manager.inc("pongs_out")
-            self.hub._queue_env(outgoing, link, pong)
+            self.hub.message_helper.queue_env(outgoing, link, pong)
 
     def _extract_caps(self, body: Any) -> dict[int, Any]:
         """Extract capabilities from HELLO body."""

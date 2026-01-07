@@ -112,7 +112,7 @@ class TrustManager:
         """Persist the current banned identities list to the config file."""
         cfg_path = self.hub.config_manager.get_config_path_for_writes()
         if not cfg_path:
-            self.hub._emit_notice(
+            self.hub.message_helper.emit_notice(
                 outgoing, link, room, "ban updated (not persisted; no config_path)"
             )
             return
@@ -120,7 +120,7 @@ class TrustManager:
         try:
             from tomlkit import dumps, parse, table  # type: ignore
         except Exception:
-            self.hub._emit_notice(
+            self.hub.message_helper.emit_notice(
                 outgoing,
                 link,
                 room,
@@ -171,6 +171,6 @@ class TrustManager:
                     except Exception:
                         pass
         except Exception as e:
-            self.hub._emit_notice(
+            self.hub.message_helper.emit_notice(
                 outgoing, link, room, f"ban updated (persist failed: {e})"
             )

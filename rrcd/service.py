@@ -26,6 +26,7 @@ from .constants import (
 )
 from .envelope import make_envelope
 from .logging_config import configure_logging
+from .messages import MessageHelper
 from .resources import ResourceManager
 from .rooms import RoomManager
 from .router import MessageRouter, OutgoingList
@@ -70,6 +71,9 @@ class HubService:
         
         # Config manager for configuration loading and reloading
         self.config_manager = ConfigManager(self)
+        
+        # Message helper for sending and queueing messages
+        self.message_helper = MessageHelper(self)
 
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
@@ -97,109 +101,11 @@ class HubService:
             return bytes(h).hex()
         return "-"
 
-    def _packet_would_fit(self, link: RNS.Link, payload: bytes) -> bool:
-        """Check if payload fits within link MDU without creating/packing packets."""
-        try:
-            # Query link MDU directly if available (more efficient than packing)
-            if hasattr(link, 'MDU') and link.MDU is not None:
-                return len(payload) <= link.MDU
-            # Fall back to packet creation if MDU not available
-            pkt = RNS.Packet(link, payload)
-            pkt.pack()
-            return True
-        except Exception:
-            return False
-
-    def _queue_notice_chunks(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]],
-        link: RNS.Link,
-        *,
-        room: str | None,
-        text: str,
-    ) -> None:
-        if self.identity is None:
-            return
-        if not text:
-            return
-
-        # Prefer splitting on lines for readability. If a single line is too
-        # large, further split it by characters using a pack preflight.
-        lines = text.splitlines() or [text]
-        for line in lines:
-            remaining = line
-            if not remaining:
-                continue
-
-            # Start with a generous chunk size; shrink on demand.
-            max_chars = min(len(remaining), 512)
-            while remaining:
-                take = min(len(remaining), max_chars)
-                chunk = remaining[:take]
-                env = make_envelope(
-                    T_NOTICE,
-                    src=self.identity.hash,
-                    room=room,
-                    body=chunk,
-                )
-                payload = encode(env)
-                if self._packet_would_fit(link, payload):
-                    self._queue_payload(outgoing, link, payload)
-                    remaining = remaining[take:]
-                    max_chars = min(max_chars, 512)
-                    continue
-
-                if max_chars <= 1:
-                    # Nothing we can do; avoid an infinite loop.
-                    self.log.warning(
-                        "NOTICE chunk would not fit MTU; dropping remainder (%s chars)",
-                        len(remaining),
-                    )
-                    break
-
-                max_chars = max(1, max_chars // 2)
-
-    def _queue_welcome(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]],
-        link: RNS.Link,
-        *,
-        peer_hash: Any,
-        motd: str | None,
-    ) -> None:
-        if self.identity is None:
-            return
-
-        g = str(motd) if motd else ""
-        body_w: dict[int, Any] = {
-            B_WELCOME_HUB: self.config.hub_name,
-            B_WELCOME_VER: str(__version__),
-        }
-        # Capabilities are optional; keep WELCOME minimal unless needed.
-
-        welcome = make_envelope(T_WELCOME, src=self.identity.hash, body=body_w)
-        welcome_payload = encode(welcome)
-
-        if not self._packet_would_fit(link, welcome_payload):
-            self.log.warning(
-                "WELCOME would not fit MTU; cannot welcome peer=%s link_id=%s",
-                self._fmt_hash(peer_hash),
-                self._fmt_link_id(link),
-            )
-            return
-
-        self._queue_payload(outgoing, link, welcome_payload)
-        self.log.debug(
-            "Queued WELCOME peer=%s link_id=%s",
-            self._fmt_hash(peer_hash),
-            self._fmt_link_id(link),
-        )
-
     def _update_nick_index(self, link: RNS.Link, old_nick: str | None, new_nick: str | None) -> None:
         """Update nick index when a nick changes. Delegates to SessionManager."""
         self.session_manager.update_nick_index(link, old_nick, new_nick)
 
-    # Resource transfer methods
+    # Resource transfer methods - delegates to message_helper for smart sending
 
     def _send_text_smart(
         self,
@@ -212,115 +118,16 @@ class HubService:
         outgoing: list[tuple[RNS.Link, bytes]] | None = None,
         kind: str | None = None,
     ) -> None:
-        """
-        Send text message using best method (packet or resource).
-        Falls back to chunking if resource transfer fails or is disabled.
-        
-        Args:
-            kind: Resource kind if sent via resource (default: RES_KIND_NOTICE)
-        """
-        if self.identity is None:
-            return
-        
-        # Try encoding as a single packet first
-        env = make_envelope(msg_type, src=self.identity.hash, room=room, body=text)
-        payload = encode(env)
-        
-        # If it fits, send normally
-        if self._packet_would_fit(link, payload):
-            self.log.debug(
-                "Text fits in packet link_id=%s bytes=%s",
-                self._fmt_link_id(link),
-                len(payload),
-            )
-            if outgoing is None:
-                self._send(link, env)
-            else:
-                self._queue_env(outgoing, link, env)
-            return
-        
-        self.log.debug(
-            "Text too large for packet link_id=%s bytes=%s mtu_check_failed=True",
-            self._fmt_link_id(link),
-            len(payload),
+        """Delegate to message_helper for smart text sending."""
+        self.message_helper.send_text_smart(
+            link,
+            msg_type=msg_type,
+            text=text,
+            room=room,
+            kind=kind,
+            outgoing=outgoing,
+            encoding=encoding,
         )
-        
-        # Too large for packet - try resource if enabled and type is NOTICE
-        # Only use resources when NOT batching (outgoing=None), since resource
-        # creation happens immediately and would race with queued packets.
-        text_bytes = text.encode(encoding)
-        can_use_resource = (
-            self.config.enable_resource_transfer
-            and msg_type == T_NOTICE
-            and outgoing is None
-            and len(text_bytes) <= self.config.max_resource_bytes
-        )
-        
-        self.log.debug(
-            "Resource check: enabled=%s type_is_notice=%s not_batching=%s size_ok=%s/%s",
-            self.config.enable_resource_transfer,
-            msg_type == T_NOTICE,
-            outgoing is None,
-            len(text_bytes),
-            self.config.max_resource_bytes,
-        )
-        
-        if can_use_resource:
-            self.log.debug(
-                "Attempting to send via resource link_id=%s kind=%s",
-                self._fmt_link_id(link),
-                kind if kind is not None else RES_KIND_NOTICE,
-            )
-            resource_kind = kind if kind is not None else RES_KIND_NOTICE
-            if self.resource_manager.send_via_resource(
-                link,
-                kind=resource_kind,
-                payload=text_bytes,
-                room=room,
-                encoding=encoding,
-            ):
-                self.log.debug(
-                    "Sent large text via resource link_id=%s kind=%s chars=%s",
-                    self._fmt_link_id(link),
-                    resource_kind,
-                    len(text),
-                )
-                return
-            else:
-                self.log.warning(
-                    "Resource send failed, falling back to chunks link_id=%s",
-                    self._fmt_link_id(link),
-                )
-        
-        # Fall back to chunking for NOTICE
-        if msg_type == T_NOTICE:
-            self.log.debug(
-                "Falling back to chunking link_id=%s outgoing_is_none=%s",
-                self._fmt_link_id(link),
-                outgoing is None,
-            )
-            if outgoing is None:
-                outgoing = []
-                self._queue_notice_chunks(outgoing, link, room=room, text=text)
-                for out_link, chunk_payload in outgoing:
-                    self.stats_manager.inc("bytes_out", len(chunk_payload))
-                    try:
-                        RNS.Packet(out_link, chunk_payload).send()
-                    except Exception as e:
-                        self.log.warning(
-                            "Failed to send chunk link_id=%s: %s",
-                            self._fmt_link_id(out_link),
-                            e,
-                        )
-            else:
-                self._queue_notice_chunks(outgoing, link, room=room, text=text)
-        else:
-            # For other message types, just drop or log error
-            self.log.error(
-                "Message too large and not NOTICE link_id=%s type=%s",
-                self._fmt_link_id(link),
-                msg_type,
-            )
 
     def start(self) -> None:
         self.log.info("Starting Reticulum")
@@ -705,55 +512,6 @@ class HubService:
             for room in rooms_to_prune:
                 self.log.info("Pruned unused registered room %s", room)
 
-    def _notice_to(self, link: RNS.Link, room: str | None, text: str) -> None:
-        if self.identity is None:
-            return
-        env = make_envelope(T_NOTICE, src=self.identity.hash, room=room, body=text)
-        self._send(link, env)
-
-    def _queue_payload(
-        self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, payload: bytes
-    ) -> None:
-        self.stats_manager.inc("bytes_out", len(payload))
-        outgoing.append((link, payload))
-
-    def _queue_env(
-        self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, env: dict
-    ) -> None:
-        payload = encode(env)
-        self._queue_payload(outgoing, link, payload)
-
-    def _emit_notice(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]] | None,
-        link: RNS.Link,
-        room: str | None,
-        text: str,
-    ) -> None:
-        if self.identity is None:
-            return
-        env = make_envelope(T_NOTICE, src=self.identity.hash, room=room, body=text)
-        if outgoing is None:
-            self._send(link, env)
-        else:
-            self._queue_env(outgoing, link, env)
-
-    def _emit_error(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]] | None,
-        link: RNS.Link,
-        *,
-        src: bytes,
-        text: str,
-        room: str | None = None,
-    ) -> None:
-        self.stats_manager.inc("errors_sent")
-        env = make_envelope(T_ERROR, src=src, room=room, body=text)
-        if outgoing is None:
-            self._send(link, env)
-        else:
-            self._queue_env(outgoing, link, env)
-
     def _on_link(self, link: RNS.Link) -> None:
         with self._state_lock:
             self.session_manager.on_link_established(link)
@@ -865,30 +623,47 @@ class HubService:
         )
 
     def _send(self, link: RNS.Link, env: dict) -> None:
-        payload = encode(env)
-        self.stats_manager.inc("bytes_out", len(payload))
-        try:
-            RNS.Packet(link, payload).send()
-        except OSError as e:
-            # Common failure mode on low-MTU links: packet too large.
-            self.log.warning(
-                "Send failed link_id=%s bytes=%s err=%s",
-                self._fmt_link_id(link),
-                len(payload),
-                e,
-            )
-        except Exception:
-            self.log.debug(
-                "Send failed link_id=%s bytes=%s",
-                self._fmt_link_id(link),
-                len(payload),
-                exc_info=True,
-            )
+        """Delegate to message_helper for sending."""
+        self.message_helper.send(link, env)
 
     def _error(
         self, link: RNS.Link, src: bytes, text: str, room: str | None = None
     ) -> None:
-        self._emit_error(None, link, src=src, text=text, room=room)
+        """Delegate to message_helper for error sending."""
+        self.message_helper.error(link, src, text, room)
+
+    def _emit_error(
+        self,
+        outgoing: list[tuple[RNS.Link, bytes]] | None,
+        link: RNS.Link,
+        *,
+        src: bytes,
+        text: str,
+        room: str | None = None,
+    ) -> None:
+        """Delegate to message_helper for error emission."""
+        self.message_helper.emit_error(outgoing, link, src=src, text=text, room=room)
+
+    def _emit_notice(
+        self,
+        outgoing: list[tuple[RNS.Link, bytes]] | None,
+        link: RNS.Link,
+        room: str | None,
+        text: str,
+    ) -> None:
+        """Delegate to message_helper for notice emission."""
+        self.message_helper.emit_notice(outgoing, link, room, text)
+
+    def _queue_welcome(
+        self,
+        outgoing: list[tuple[RNS.Link, bytes]],
+        link: RNS.Link,
+        *,
+        peer_hash: Any,
+        motd: str | None,
+    ) -> None:
+        """Delegate to message_helper for queuing welcome."""
+        self.message_helper.queue_welcome(outgoing, link, peer_hash=peer_hash, motd=motd)
 
     def _norm_room(self, room: str) -> str:
         r = room.strip().lower()

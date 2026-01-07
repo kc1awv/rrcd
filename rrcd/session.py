@@ -90,7 +90,7 @@ class SessionManager:
             self._index_by_hash[bytes(peer_hash)] = link
 
             # Check if banned
-            banned = bytes(peer_hash) in self.hub._banned
+            banned = self.hub.trust_manager.is_banned(bytes(peer_hash))
             
             if not banned:
                 self.log.info(

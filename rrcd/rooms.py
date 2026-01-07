@@ -225,7 +225,7 @@ class RoomManager:
         mode_txt = self.get_room_mode_string(room)
         recipients = list(self.get_room_members(room))
         for other in recipients:
-            self.hub._emit_notice(
+            self.hub.message_helper.emit_notice(
                 outgoing, other, room, f"mode for {room} is now: {mode_txt}"
             )
 
@@ -567,7 +567,7 @@ class RoomManager:
                     except Exception:
                         pass
         except Exception as e:
-            self.hub._notice_to(link, room, f"room config persist failed: {e}")
+            self.hub.message_helper.notice_to(link, room, f"room config persist failed: {e}")
 
     def delete_room_from_registry(self, link: RNS.Link, room: str) -> None:
         """Remove a room from the registry TOML file."""
@@ -607,7 +607,7 @@ class RoomManager:
                     except Exception:
                         pass
         except Exception as e:
-            self.hub._notice_to(link, room, f"room unregister persist failed: {e}")
+            self.hub.message_helper.notice_to(link, room, f"room unregister persist failed: {e}")
 
     def prune_unused_registered_rooms(
         self, prune_after_s: float, started_wall_time: float
