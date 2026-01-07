@@ -64,7 +64,7 @@ class MessageRouter:
         
         This method should be called with the state lock held.
         """
-        sess = self.hub.sessions.get(link)
+        sess = self.hub.session_manager.sessions.get(link)
         if sess is None:
             return
 
@@ -518,7 +518,7 @@ class MessageRouter:
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
             for member_link in self.hub.rooms.get(r, set()):
-                s = self.hub.sessions.get(member_link)
+                s = self.hub.session_manager.sessions.get(member_link)
                 ph = s.get("peer") if s else None
                 if isinstance(ph, (bytes, bytearray)):
                     members.append(bytes(ph))
@@ -603,7 +603,7 @@ class MessageRouter:
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
             for member_link in self.hub.rooms.get(r, set()):
-                s = self.hub.sessions.get(member_link)
+                s = self.hub.session_manager.sessions.get(member_link)
                 ph = s.get("peer") if s else None
                 if isinstance(ph, (bytes, bytearray)):
                     members.append(bytes(ph))

@@ -69,21 +69,6 @@ class HubService:
         # Session manager for connection lifecycle
         self.session_manager = SessionManager(self)
 
-    @property
-    def sessions(self) -> dict[RNS.Link, dict[str, Any]]:
-        """Delegate to session_manager.sessions for backward compatibility."""
-        return self.session_manager.sessions
-
-    @property
-    def _index_by_hash(self) -> dict[bytes, RNS.Link]:
-        """Delegate to session_manager for backward compatibility."""
-        return self.session_manager._index_by_hash
-    
-    @property
-    def _index_by_nick(self) -> dict[str, set[RNS.Link]]:
-        """Delegate to session_manager for backward compatibility."""
-        return self.session_manager._index_by_nick
-
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
 
@@ -449,7 +434,7 @@ class HubService:
         
         # Check session exists and find expectation with minimal lock scope
         with self._state_lock:
-            sess = self.sessions.get(link)
+            sess = self.session_manager.sessions.get(link)
             if not sess:
                 self.log.debug(
                     "Rejecting resource (no session) link_id=%s",
@@ -594,7 +579,7 @@ class HubService:
             # Forward NOTICE to room members if room is specified
             if exp.room and self.identity is not None:
                 with self._state_lock:
-                    sess = self.sessions.get(link)
+                    sess = self.session_manager.sessions.get(link)
                     peer_hash = sess.get("peer") if sess else None
                     room_members = self.rooms.get(exp.room, set())
                 
@@ -1646,7 +1631,7 @@ class HubService:
         """
         target_link = self._find_target_link(token, room=room)
         if target_link is not None:
-            s = self.sessions.get(target_link)
+            s = self.session_manager.sessions.get(target_link)
             ph = s.get("peer") if s else None
             if isinstance(ph, (bytes, bytearray)):
                 return bytes(ph)
@@ -1666,7 +1651,7 @@ class HubService:
         
         if len(matches) == 1:
             # Exactly one match - get hash from session
-            s = self.sessions.get(matches[0])
+            s = self.session_manager.sessions.get(matches[0])
             ph = s.get("peer") if s else None
             if isinstance(ph, (bytes, bytearray)):
                 return (bytes(ph), matches)
@@ -1855,7 +1840,7 @@ class HubService:
             dummy_link: RNS.Link | None = None
 
             with self._state_lock:
-                dummy_link = next(iter(self.sessions.keys()), None)
+                dummy_link = next(iter(self.session_manager.sessions.keys()), None)
 
                 for room, reg in list(self._room_registry.items()):
                     # Skip active rooms.
@@ -2149,11 +2134,11 @@ class HubService:
                 with self._state_lock:
                     # Search hash index for matching prefixes
                     matches: list[RNS.Link] = []
-                    for peer_hash, candidate_link in self._index_by_hash.items():
+                    for peer_hash, candidate_link in self.session_manager._index_by_hash.items():
                         if peer_hash.startswith(prefix):
                             # Check room membership if specified
                             if room is not None:
-                                sess = self.sessions.get(candidate_link)
+                                sess = self.session_manager.sessions.get(candidate_link)
                                 if sess and room not in sess.get("rooms", set()):
                                     continue
                             matches.append(candidate_link)
@@ -2162,7 +2147,7 @@ class HubService:
 
         # Otherwise treat as nickname - use nick index for O(1) lookup
         with self._state_lock:
-            candidate_links = self._index_by_nick.get(t, set())
+            candidate_links = self.session_manager._index_by_nick.get(t, set())
             if not candidate_links:
                 return []
             
@@ -2170,7 +2155,7 @@ class HubService:
             if room is not None:
                 matches = []
                 for candidate_link in candidate_links:
-                    sess = self.sessions.get(candidate_link)
+                    sess = self.session_manager.sessions.get(candidate_link)
                     if sess and room in sess.get("rooms", set()):
                         matches.append(candidate_link)
             else:
@@ -2188,7 +2173,7 @@ class HubService:
         with self._state_lock:
             items = []
             for match_link in matches:
-                sess = self.sessions.get(match_link)
+                sess = self.session_manager.sessions.get(match_link)
                 if not sess:
                     continue
                 peer = sess.get("peer")
@@ -2314,7 +2299,7 @@ class HubService:
 
             members = []
             for other in sorted(self.rooms.get(r, set()), key=lambda x: id(x)):
-                s = self.sessions.get(other)
+                s = self.session_manager.sessions.get(other)
                 if not s:
                     continue
                 nick = s.get("nick")
@@ -2367,7 +2352,7 @@ class HubService:
                 )
                 return True
 
-            tsess = self.sessions.get(target_link)
+            tsess = self.session_manager.sessions.get(target_link)
             if not tsess or r not in tsess.get("rooms", set()):
                 self._emit_notice(outgoing, link, room, "target not in room")
                 return True
@@ -2441,7 +2426,7 @@ class HubService:
             if op == "add":
                 target_link = self._find_target_link(target)
                 if target_link is not None:
-                    tsess = self.sessions.get(target_link)
+                    tsess = self.session_manager.sessions.get(target_link)
                     ph = tsess.get("peer") if tsess else None
                     if isinstance(ph, (bytes, bytearray)):
                         self._banned.add(bytes(ph))
@@ -2503,7 +2488,7 @@ class HubService:
             if (
                 not room
                 or self._norm_room(room) != r
-                or r not in self.sessions.get(link, {}).get("rooms", set())
+                or r not in self.session_manager.sessions.get(link, {}).get("rooms", set())
             ):
                 self._emit_notice(
                     outgoing, link, room, "must be present in the room to register it"
@@ -2579,7 +2564,7 @@ class HubService:
             if (
                 not room
                 or self._norm_room(room) != r
-                or r not in self.sessions.get(link, {}).get("rooms", set())
+                or r not in self.session_manager.sessions.get(link, {}).get("rooms", set())
             ):
                 self._emit_notice(
                     outgoing, link, room, "must be present in the room to unregister it"
@@ -2975,7 +2960,7 @@ class HubService:
 
                 # If currently present in room, remove them.
                 for other in list(self.rooms.get(r, set())):
-                    s = self.sessions.get(other)
+                    s = self.session_manager.sessions.get(other)
                     ph = s.get("peer") if s else None
                     if isinstance(ph, (bytes, bytearray)) and bytes(ph) == target_hash:
                         s.get("rooms", set()).discard(r)
@@ -3096,7 +3081,7 @@ class HubService:
                         )
                     return True
 
-                tsess = self.sessions.get(target_link)
+                tsess = self.session_manager.sessions.get(target_link)
                 ph = tsess.get("peer") if tsess else None
                 if not isinstance(ph, (bytes, bytearray)):
                     if self.identity is not None:
@@ -3383,7 +3368,7 @@ class HubService:
             to_ping: list[RNS.Link] = []
 
             with self._state_lock:
-                for link, sess in list(self.sessions.items()):
+                for link, sess in list(self.session_manager.sessions.items()):
                     if not sess.get("welcomed"):
                         continue
 
