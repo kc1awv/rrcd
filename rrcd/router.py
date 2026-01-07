@@ -324,10 +324,6 @@ class MessageRouter:
                     new_nick = n2
                     sess["nick"] = n2
 
-        # Update nick index if nick changed
-        if old_nick != new_nick:
-            self.hub._update_nick_index(link, old_nick, new_nick)
-
         self.log.info(
             "HELLO peer=%s nick=%r link_id=%s",
             self.hub._fmt_hash(peer_hash),
@@ -335,29 +331,14 @@ class MessageRouter:
             self.hub._fmt_link_id(link),
         )
 
-        sess["welcomed"] = True
-        self.hub._queue_welcome(
-            outgoing,
+        # Send welcome message and MOTD
+        self.hub.session_manager.send_welcome(
             link,
+            outgoing,
             peer_hash=peer_hash,
-            motd=self.hub.config.greeting,
+            old_nick=old_nick,
+            new_nick=new_nick,
         )
-        
-        # Send MOTD after WELCOME (outside of outgoing queue to enable resource transfer)
-        # The outgoing queue will be sent first, then this callback will send the MOTD
-        if self.hub.config.greeting:
-            def send_motd():
-                self.hub.message_helper.send_text_smart(
-                    link,
-                    msg_type=T_NOTICE,
-                    text=self.hub.config.greeting,
-                    room=None,
-                    kind=RES_KIND_MOTD,
-                )
-            # Store callback to be executed after outgoing packets are sent
-            if not hasattr(outgoing, '_post_send_callbacks'):
-                outgoing._post_send_callbacks = []  # type: ignore
-            outgoing._post_send_callbacks.append(send_motd)  # type: ignore
 
     def _handle_re_hello(
         self,
@@ -406,10 +387,6 @@ class MessageRouter:
                     new_nick = n2
                     sess["nick"] = n2
 
-        # Update nick index if nick changed
-        if old_nick != new_nick:
-            self.hub._update_nick_index(link, old_nick, new_nick)
-
         self.log.info(
             "Re-HELLO peer=%s nick=%r link_id=%s",
             self.hub._fmt_hash(peer_hash),
@@ -417,12 +394,13 @@ class MessageRouter:
             self.hub._fmt_link_id(link),
         )
 
-        sess["welcomed"] = True
-        self.hub._queue_welcome(
-            outgoing,
+        # Send welcome message and MOTD
+        self.hub.session_manager.send_welcome(
             link,
+            outgoing,
             peer_hash=peer_hash,
-            motd=self.hub.config.greeting,
+            old_nick=old_nick,
+            new_nick=new_nick,
         )
 
     def _handle_join(
@@ -787,7 +765,7 @@ class MessageRouter:
                 old_session_nick = sess.get("nick")
                 if old_session_nick != n:
                     sess["nick"] = n
-                    self.hub._update_nick_index(link, old_session_nick, n)
+                    self.hub.session_manager.update_nick_index(link, old_session_nick, n)
                 env[K_NICK] = n
             else:
                 # Invalid nickname provided - remove it

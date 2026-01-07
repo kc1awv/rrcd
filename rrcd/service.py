@@ -554,56 +554,6 @@ class HubService:
             except Exception:
                 pass
 
-    def _welcome(self, link: RNS.Link, sess: dict[str, Any]) -> None:
-        if self.identity is None:
-            return
-
-        sess["welcomed"] = True
-        # Use the queued path so we can preflight MTU sizing and optionally
-        # follow up with MOTD via resource or chunks.
-        outgoing: list[tuple[RNS.Link, bytes]] = []
-        self._queue_welcome(
-            outgoing,
-            link,
-            peer_hash=sess.get("peer"),
-            motd=self.config.greeting,
-        )
-        
-        # Send queued WELCOME first
-        for out_link, payload in outgoing:
-            self.stats_manager.inc("bytes_out", len(payload))
-            try:
-                RNS.Packet(out_link, payload).send()
-            except OSError as e:
-                self.log.warning(
-                    "Send failed link_id=%s bytes=%s err=%s",
-                    self._fmt_link_id(out_link),
-                    len(payload),
-                    e,
-                )
-            except Exception:
-                self.log.debug(
-                    "Send failed link_id=%s bytes=%s",
-                    self._fmt_link_id(out_link),
-                    len(payload),
-                    exc_info=True,
-                )
-        
-        # Now send MOTD via resource or chunks (after WELCOME is sent)
-        if self.config.greeting:
-            self.log.debug(
-                "Sending MOTD link_id=%s len=%s",
-                self._fmt_link_id(link),
-                len(self.config.greeting),
-            )
-            self._send_text_smart(
-                link,
-                msg_type=T_NOTICE,
-                text=self.config.greeting,
-                room=None,
-                kind=RES_KIND_MOTD,
-            )
-
     def _on_close(self, link: RNS.Link) -> None:
         peer = None
         nick = None
@@ -653,17 +603,6 @@ class HubService:
     ) -> None:
         """Delegate to message_helper for notice emission."""
         self.message_helper.emit_notice(outgoing, link, room, text)
-
-    def _queue_welcome(
-        self,
-        outgoing: list[tuple[RNS.Link, bytes]],
-        link: RNS.Link,
-        *,
-        peer_hash: Any,
-        motd: str | None,
-    ) -> None:
-        """Delegate to message_helper for queuing welcome."""
-        self.message_helper.queue_welcome(outgoing, link, peer_hash=peer_hash, motd=motd)
 
     def _norm_room(self, room: str) -> str:
         r = room.strip().lower()

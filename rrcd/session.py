@@ -220,3 +220,60 @@ class SessionManager:
             "indexed_by_hash": len(self._index_by_hash),
             "indexed_by_nick": len(self._index_by_nick),
         }
+
+    def send_welcome(
+        self,
+        link: RNS.Link,
+        outgoing: list[tuple[RNS.Link, bytes]],
+        *,
+        peer_hash: bytes,
+        old_nick: str | None = None,
+        new_nick: str | None = None,
+    ) -> None:
+        """
+        Send WELCOME message to a client and optionally MOTD.
+        
+        This handles:
+        - Setting session as welcomed
+        - Updating nick index if needed
+        - Queueing WELCOME message
+        - Setting up MOTD callback for post-send delivery
+        
+        Must be called with state lock held.
+        """
+        from .constants import RES_KIND_MOTD, T_NOTICE
+        
+        sess = self.sessions.get(link)
+        if sess is None:
+            return
+        
+        # Update nick index if nick changed
+        if old_nick != new_nick:
+            self.update_nick_index(link, old_nick, new_nick)
+        
+        # Mark session as welcomed
+        sess["welcomed"] = True
+        
+        # Queue WELCOME message
+        self.hub.message_helper.queue_welcome(
+            outgoing,
+            link,
+            peer_hash=peer_hash,
+            motd=self.hub.config.greeting,
+        )
+        
+        # Send MOTD after WELCOME (outside of outgoing queue to enable resource transfer)
+        # The outgoing queue will be sent first, then this callback will send the MOTD
+        if self.hub.config.greeting:
+            def send_motd():
+                self.hub.message_helper.send_text_smart(
+                    link,
+                    msg_type=T_NOTICE,
+                    text=self.hub.config.greeting,
+                    room=None,
+                    kind=RES_KIND_MOTD,
+                )
+            # Store callback to be executed after outgoing packets are sent
+            if not hasattr(outgoing, '_post_send_callbacks'):
+                outgoing._post_send_callbacks = []  # type: ignore
+            outgoing._post_send_callbacks.append(send_motd)  # type: ignore
