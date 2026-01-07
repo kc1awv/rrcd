@@ -85,11 +85,8 @@ def validate_envelope(env: dict) -> None:
         room = env[K_ROOM]
         if not isinstance(room, str):
             raise TypeError("room name must be a string")
-        # Per RRC spec, room field may be empty (e.g., for hub commands)
 
     if K_NICK in env:
         nick = env[K_NICK]
         if not isinstance(nick, str):
             raise TypeError("nickname must be a string")
-        # Per spec, nicknames are advisory and may be empty or "ridiculous".
-        # Type-check only; implementations may sanitize/ignore for display.

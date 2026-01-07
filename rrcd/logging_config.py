@@ -99,7 +99,6 @@ def configure_logging(
 
     root.setLevel(level)
 
-    # Library loggers
     logging.getLogger("RNS").setLevel(rns_level)
 
     logging.captureWarnings(True)

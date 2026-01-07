@@ -25,8 +25,6 @@ def normalize_nick(value, *, max_chars: int = _DEFAULT_NICK_MAX_CHARS) -> str | 
     if limit > 0 and len(s) > limit:
         return None
 
-    # Keep this conservative: avoid embedded newlines or NUL, which frequently
-    # cause UI/log formatting issues.
     if "\n" in s or "\r" in s or "\x00" in s:
         return None
 
