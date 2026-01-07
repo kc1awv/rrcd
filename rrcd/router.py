@@ -74,8 +74,8 @@ class MessageRouter:
         if sess is None:
             return
 
-        self.hub._inc("pkts_in")
-        self.hub._inc("bytes_in", len(data))
+        self.hub.stats_manager.inc("pkts_in")
+        self.hub.stats_manager.inc("bytes_in", len(data))
 
         peer_hash = sess.get("peer")
         if peer_hash is None:
@@ -88,7 +88,7 @@ class MessageRouter:
             sess["peer"] = peer_hash
 
         if not self.hub._refill_and_take(link, 1.0):
-            self.hub._inc("rate_limited")
+            self.hub.stats_manager.inc("rate_limited")
             if self.log.isEnabledFor(logging.DEBUG):
                 self.log.debug(
                     "Rate limited peer=%s link_id=%s",
@@ -105,7 +105,7 @@ class MessageRouter:
             env = decode(data)
             validate_envelope(env)
         except Exception as e:
-            self.hub._inc("pkts_bad")
+            self.hub.stats_manager.inc("pkts_bad")
             self.log.debug(
                 "Bad packet peer=%s link_id=%s bytes=%s err=%s",
                 self.hub._fmt_hash(peer_hash),
@@ -160,7 +160,7 @@ class MessageRouter:
 
     def _handle_pong(self, link: RNS.Link, sess: dict[str, Any]) -> None:
         """Handle PONG message."""
-        self.hub._inc("pongs_in")
+        self.hub.stats_manager.inc("pongs_in")
         sess["awaiting_pong"] = None
 
     def _handle_resource_envelope(
@@ -437,7 +437,7 @@ class MessageRouter:
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
 
-        self.hub._inc("joins")
+        self.hub.stats_manager.inc("joins")
         if not isinstance(room, str) or not room:
             if self.hub.identity is not None:
                 self.hub._emit_error(
@@ -582,7 +582,7 @@ class MessageRouter:
         """Handle PART message."""
         room = env.get(K_ROOM)
 
-        self.hub._inc("parts")
+        self.hub.stats_manager.inc("parts")
         if not isinstance(room, str) or not room:
             if self.hub.identity is not None:
                 self.hub._emit_error(
@@ -815,9 +815,9 @@ class MessageRouter:
             )
 
         if t == T_MSG:
-            self.hub._inc("msgs_forwarded")
+            self.hub.stats_manager.inc("msgs_forwarded")
         else:
-            self.hub._inc("notices_forwarded")
+            self.hub.stats_manager.inc("notices_forwarded")
 
     def _handle_ping(
         self,
@@ -828,10 +828,10 @@ class MessageRouter:
         """Handle PING message."""
         body = env.get(K_BODY)
 
-        self.hub._inc("pings_in")
+        self.hub.stats_manager.inc("pings_in")
         if self.hub.identity is not None:
             pong = make_envelope(T_PONG, src=self.hub.identity.hash, body=body)
-            self.hub._inc("pongs_out")
+            self.hub.stats_manager.inc("pongs_out")
             self.hub._queue_env(outgoing, link, pong)
 
     def _extract_caps(self, body: Any) -> dict[int, Any]:

@@ -252,7 +252,7 @@ class ResourceManager:
                 "Rejecting resource (disabled) link_id=%s",
                 self.hub._fmt_link_id(link),
             )
-            self.hub._inc("resources_rejected")
+            self.hub.stats_manager.inc("resources_rejected")
             return False
         
         # Check size limit (immutable config)
@@ -264,7 +264,7 @@ class ResourceManager:
                 self.hub.config.max_resource_bytes,
                 self.hub._fmt_link_id(link),
             )
-            self.hub._inc("resources_rejected")
+            self.hub.stats_manager.inc("resources_rejected")
             return False
         
         # Check session exists and find expectation with minimal lock scope
@@ -275,7 +275,7 @@ class ResourceManager:
                     "Rejecting resource (no session) link_id=%s",
                     self.hub._fmt_link_id(link),
                 )
-                self.hub._inc("resources_rejected")
+                self.hub.stats_manager.inc("resources_rejected")
                 return False
             
             # Find matching expectation
@@ -288,7 +288,7 @@ class ResourceManager:
                 self.hub._fmt_link_id(link),
                 size,
             )
-            self.hub._inc("resources_rejected")
+            self.hub.stats_manager.inc("resources_rejected")
             return False
         
         # Accept and register with minimal lock scope
@@ -365,8 +365,8 @@ class ResourceManager:
         # Pop expectation only after validation succeeds.
         self.pop_resource_expectation(link, exp.id)
 
-        self.hub._inc("resources_received")
-        self.hub._inc("resource_bytes_received", size)
+        self.hub.stats_manager.inc("resources_received")
+        self.hub.stats_manager.inc("resource_bytes_received", size)
         
         self.log.info(
             "Resource received link_id=%s size=%s kind=%s",
@@ -442,7 +442,7 @@ class ResourceManager:
                                 )
                     
                     if forwarded > 0:
-                        self.hub._inc("notices_forwarded")
+                        self.hub.stats_manager.inc("notices_forwarded")
                         self.log.debug(
                             "Forwarded NOTICE resource to %d members room=%s",
                             forwarded,
@@ -540,7 +540,7 @@ class ResourceManager:
         try:
             envelope_payload = encode(envelope)
             RNS.Packet(link, envelope_payload).send()
-            self.hub._inc("bytes_out", len(envelope_payload))
+            self.hub.stats_manager.inc("bytes_out", len(envelope_payload))
             
             self.log.debug(
                 "Sent resource envelope link_id=%s rid=%s kind=%s size=%s",
@@ -566,8 +566,8 @@ class ResourceManager:
             with self.hub._state_lock:
                 self._active_resources.setdefault(link, set()).add(resource)
             
-            self.hub._inc("resources_sent")
-            self.hub._inc("resource_bytes_sent", size)
+            self.hub.stats_manager.inc("resources_sent")
+            self.hub.stats_manager.inc("resource_bytes_sent", size)
             
             self.log.info(
                 "Sent resource link_id=%s rid=%s kind=%s size=%s",

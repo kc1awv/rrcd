@@ -30,6 +30,7 @@ from .resources import ResourceManager
 from .rooms import RoomManager
 from .router import MessageRouter, OutgoingList
 from .session import SessionManager
+from .stats import StatsManager
 from .util import expand_path
 
 
@@ -59,6 +60,9 @@ class HubService:
         
         # Room manager for room memberships and permissions
         self.room_manager = RoomManager(self)
+        
+        # Stats manager for metrics and reporting
+        self.stats_manager = StatsManager(self)
 
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
@@ -74,33 +78,6 @@ class HubService:
         self._resource_cleanup_thread: threading.Thread | None = None
 
         self._config_write_lock = threading.Lock()
-
-        self._started_wall_time: float | None = None
-        self._started_monotonic: float | None = None
-        # Lifetime counters for uptime statistics (monotonically increasing after startup).
-        # Python int has arbitrary precision, so overflow is not a concern.
-        self._counters: dict[str, int] = {
-            "bytes_in": 0,
-            "bytes_out": 0,
-            "pkts_in": 0,
-            "pkts_bad": 0,
-            "rate_limited": 0,
-            "errors_sent": 0,
-            "joins": 0,
-            "parts": 0,
-            "msgs_forwarded": 0,
-            "notices_forwarded": 0,
-            "pings_in": 0,
-            "pongs_in": 0,
-            "pings_out": 0,
-            "pongs_out": 0,
-            "announces": 0,
-            "resources_sent": 0,
-            "resources_received": 0,
-            "resources_rejected": 0,
-            "resource_bytes_sent": 0,
-            "resource_bytes_received": 0,
-        }
 
 
 
@@ -217,13 +194,6 @@ class HubService:
             self._fmt_link_id(link),
         )
 
-    def _inc(self, key: str, delta: int = 1) -> None:
-        try:
-            with self._state_lock:
-                self._counters[key] = int(self._counters.get(key, 0)) + int(delta)
-        except Exception:
-            pass
-
     def _update_nick_index(self, link: RNS.Link, old_nick: str | None, new_nick: str | None) -> None:
         """Update nick index when a nick changes. Delegates to SessionManager."""
         self.session_manager.update_nick_index(link, old_nick, new_nick)
@@ -332,7 +302,7 @@ class HubService:
                 outgoing = []
                 self._queue_notice_chunks(outgoing, link, room=room, text=text)
                 for out_link, chunk_payload in outgoing:
-                    self._inc("bytes_out", len(chunk_payload))
+                    self.stats_manager.inc("bytes_out", len(chunk_payload))
                     try:
                         RNS.Packet(out_link, chunk_payload).send()
                     except Exception as e:
@@ -353,10 +323,8 @@ class HubService:
 
     def start(self) -> None:
         self.log.info("Starting Reticulum")
-        if self._started_wall_time is None:
-            self._started_wall_time = time.time()
-        if self._started_monotonic is None:
-            self._started_monotonic = time.monotonic()
+        if self.stats_manager.started_wall_time is None:
+            self.stats_manager.set_start_time()
         RNS.Reticulum(configdir=self.config.configdir, require_shared_instance=False)
 
         if not self.config.identity_path:
@@ -443,7 +411,7 @@ class HubService:
             self.destination.announce(
                 app_data=encode({"proto": "rrc", "v": 1, "hub": self.config.hub_name})
             )
-            self._inc("announces")
+            self.stats_manager.inc("announces")
         except Exception:
             self.log.exception("Announce failed")
 
@@ -822,7 +790,7 @@ class HubService:
             with self._state_lock:
                 dummy_link = next(iter(self.session_manager.sessions.keys()), None)
                 rooms_to_prune = self.room_manager.prune_unused_registered_rooms(
-                    prune_after, self._started_wall_time or time.time()
+                    prune_after, self.stats_manager.started_wall_time or time.time()
                 )
 
             if dummy_link is not None:
@@ -923,7 +891,7 @@ class HubService:
     def _queue_payload(
         self, outgoing: list[tuple[RNS.Link, bytes]], link: RNS.Link, payload: bytes
     ) -> None:
-        self._inc("bytes_out", len(payload))
+        self.stats_manager.inc("bytes_out", len(payload))
         outgoing.append((link, payload))
 
     def _queue_env(
@@ -956,97 +924,12 @@ class HubService:
         text: str,
         room: str | None = None,
     ) -> None:
-        self._inc("errors_sent")
+        self.stats_manager.inc("errors_sent")
         env = make_envelope(T_ERROR, src=src, room=room, body=text)
         if outgoing is None:
             self._send(link, env)
         else:
             self._queue_env(outgoing, link, env)
-
-    def _format_stats(self) -> str:
-        now_mono = time.monotonic()
-        started_mono = self._started_monotonic
-        uptime_s = (now_mono - started_mono) if started_mono is not None else 0.0
-
-        with self._state_lock:
-            session_stats = self.session_manager.get_stats()
-            sessions_total = session_stats["total"]
-            sessions_welcomed = session_stats["welcomed"]
-            sessions_identified = session_stats["identified"]
-
-            room_stats = self.room_manager.get_stats()
-            rooms_total = room_stats["rooms_total"]
-            memberships = room_stats["memberships"]
-            top_rooms = room_stats["top_rooms"]
-
-            trusted_count = len(self._trusted)
-            banned_count = len(self._banned)
-            c = dict(self._counters)
-
-        lines: list[str] = []
-        lines.append(f"rrcd {__version__} stats")
-        lines.append(f"uptime_s={uptime_s:.1f}")
-        lines.append(
-            f"clients_total={sessions_total} "
-            f"clients_identified={sessions_identified} "
-            f"clients_welcomed={sessions_welcomed}"
-        )
-        lines.append(f"rooms={rooms_total} memberships={memberships}")
-
-        if top_rooms:
-            lines.append("top_rooms=" + ", ".join(f"{r}:{n}" for r, n in top_rooms))
-
-        lines.append(f"trust: trusted={trusted_count} banned={banned_count}")
-        lines.append(
-            f"limits: rate_limit_msgs_per_minute={self.config.rate_limit_msgs_per_minute} "
-            f"max_rooms_per_session={self.config.max_rooms_per_session} "
-            f"max_room_name_len={self.config.max_room_name_len} "
-            f"nick_max_chars={self.config.nick_max_chars}"
-        )
-        lines.append(
-            f"features: ping_interval_s={self.config.ping_interval_s} "
-            f"ping_timeout_s={self.config.ping_timeout_s} "
-            f"announce_on_start={self.config.announce_on_start} "
-            f"announce_period_s={self.config.announce_period_s}"
-        )
-
-        lines.append(
-            "io: pkts_in={} pkts_bad={} bytes_in={} bytes_out={}".format(
-                c.get("pkts_in", 0),
-                c.get("pkts_bad", 0),
-                c.get("bytes_in", 0),
-                c.get("bytes_out", 0),
-            )
-        )
-        lines.append(
-            "events: joins={} parts={} msgs_fwd={} notices_fwd={} errors_sent={} rate_limited={}".format(
-                c.get("joins", 0),
-                c.get("parts", 0),
-                c.get("msgs_forwarded", 0),
-                c.get("notices_forwarded", 0),
-                c.get("errors_sent", 0),
-                c.get("rate_limited", 0),
-            )
-        )
-        lines.append(
-            "pings: in={} out={} pongs: in={} out={}".format(
-                c.get("pings_in", 0),
-                c.get("pings_out", 0),
-                c.get("pongs_in", 0),
-                c.get("pongs_out", 0),
-            )
-        )
-        lines.append(
-            "resources: sent={} received={} rejected={} bytes_sent={} bytes_received={}".format(
-                c.get("resources_sent", 0),
-                c.get("resources_received", 0),
-                c.get("resources_rejected", 0),
-                c.get("resource_bytes_sent", 0),
-                c.get("resource_bytes_received", 0),
-            )
-        )
-
-        return "".join(lines)
 
     def _on_link(self, link: RNS.Link) -> None:
         with self._state_lock:
@@ -1107,7 +990,7 @@ class HubService:
         
         # Send queued WELCOME first
         for out_link, payload in outgoing:
-            self._inc("bytes_out", len(payload))
+            self.stats_manager.inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
             except OSError as e:
@@ -1160,7 +1043,7 @@ class HubService:
 
     def _send(self, link: RNS.Link, env: dict) -> None:
         payload = encode(env)
-        self._inc("bytes_out", len(payload))
+        self.stats_manager.inc("bytes_out", len(payload))
         try:
             RNS.Packet(link, payload).send()
         except OSError as e:
@@ -1212,7 +1095,7 @@ class HubService:
             )
 
         for out_link, payload in outgoing:
-            self._inc("bytes_out", len(payload))
+            self.stats_manager.inc("bytes_out", len(payload))
             try:
                 RNS.Packet(out_link, payload).send()
             except OSError as e:
@@ -1294,7 +1177,7 @@ class HubService:
             for link in to_ping:
                 ping = make_envelope(T_PING, src=self.identity.hash, body=now)
                 try:
-                    self._inc("pings_out")
+                    self.stats_manager.inc("pings_out")
                     self._send(link, ping)
                 except Exception:
                     pass

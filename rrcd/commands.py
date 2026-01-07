@@ -72,7 +72,7 @@ class CommandHandler:
                     )
                 return True
             # Send response without room field for hub-level command
-            self._emit_notice(outgoing, link, None, self.hub._format_stats())
+            self._emit_notice(outgoing, link, None, self.hub.stats_manager.format_stats())
             return True
 
         if cmd == "list":
@@ -1099,7 +1099,7 @@ class CommandHandler:
         text: str,
         room: str | None = None,
     ) -> None:
-        self.hub._inc("errors_sent")
+        self.hub.stats_manager.inc("errors_sent")
         env = make_envelope(T_ERROR, src=src, room=room, body=text)
         if outgoing is None:
             self.hub._send(link, env)
