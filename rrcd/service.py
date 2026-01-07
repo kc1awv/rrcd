@@ -31,6 +31,7 @@ from .rooms import RoomManager
 from .router import MessageRouter, OutgoingList
 from .session import SessionManager
 from .stats import StatsManager
+from .trust import TrustManager
 from .util import expand_path
 
 
@@ -63,13 +64,12 @@ class HubService:
         
         # Stats manager for metrics and reporting
         self.stats_manager = StatsManager(self)
+        
+        # Trust manager for trusted/banned identities
+        self.trust_manager = TrustManager(self)
 
         self.identity: RNS.Identity | None = None
         self.destination: RNS.Destination | None = None
-
-
-        self._trusted: set[bytes] = set()
-        self._banned: set[bytes] = set()
 
         self._prune_thread: threading.Thread | None = None
 
@@ -331,16 +331,10 @@ class HubService:
             raise RuntimeError("identity_path is not set")
         self.identity = self._load_identity(self.config.identity_path)
 
-        self._trusted = {
-            self._parse_identity_hash(h)
-            for h in (self.config.trusted_identities or ())
-            if str(h).strip()
-        }
-        self._banned = {
-            self._parse_identity_hash(h)
-            for h in (self.config.banned_identities or ())
-            if str(h).strip()
-        }
+        self.trust_manager.load_from_config(
+            self.config.trusted_identities,
+            self.config.banned_identities,
+        )
 
         self._load_registered_rooms_from_registry()
 
@@ -612,8 +606,8 @@ class HubService:
 
         with self._state_lock:
             old_cfg = self.config
-            old_trusted = set(self._trusted)
-            old_banned = set(self._banned)
+            old_trusted = set(self.trust_manager._trusted)
+            old_banned = set(self.trust_manager._banned)
             old_registry = dict(self.room_manager._room_registry)
 
         # Stage config parse
@@ -661,8 +655,8 @@ class HubService:
         with self._state_lock:
             # Apply (all-or-nothing)
             self.config = new_cfg
-            self._trusted = new_trusted
-            self._banned = new_banned
+            self.trust_manager._trusted = new_trusted
+            self.trust_manager._banned = new_banned
             self.room_manager._room_registry = new_registry
 
             # Merge registry into live per-room state (for active rooms).
@@ -712,9 +706,6 @@ class HubService:
         if err is not None:
             return
         self.room_manager._room_registry = registry
-
-    def _is_server_op(self, peer_hash: bytes | None) -> bool:
-        return self._is_trusted(peer_hash)
 
     def _resolve_identity_hash(
         self, token: str, *, room: str | None = None
@@ -805,82 +796,6 @@ class HubService:
         if not p:
             return None
         return expand_path(str(p))
-
-    def _persist_banned_identities_to_config(
-        self,
-        link: RNS.Link,
-        room: str | None,
-        outgoing: list[tuple[RNS.Link, bytes]] | None = None,
-    ) -> None:
-        cfg_path = self._config_path_for_writes()
-        if not cfg_path:
-            self._emit_notice(
-                outgoing, link, room, "ban updated (not persisted; no config_path)"
-            )
-            return
-
-        try:
-            from tomlkit import dumps, parse, table  # type: ignore
-        except Exception:
-            self._emit_notice(
-                outgoing,
-                link,
-                room,
-                "ban updated (not persisted; missing dependency tomlkit)",
-            )
-            return
-
-        try:
-            with self._config_write_lock:
-                st = None
-                try:
-                    st = os.stat(cfg_path)
-                except Exception:
-                    st = None
-
-                with open(cfg_path, encoding="utf-8") as f:
-                    doc = parse(f.read())
-
-                hub = doc.get("hub")
-                if hub is None:
-                    hub = table()
-                    doc["hub"] = hub
-
-                existing = hub.get("banned_identities")
-                existing_list: list[str] = []
-                if isinstance(existing, list):
-                    for x in existing:
-                        if x is None:
-                            continue
-                        sx = str(x).strip().lower()
-                        if sx.startswith("0x"):
-                            sx = sx[2:]
-                        if sx:
-                            existing_list.append(sx)
-
-                merged = set(existing_list)
-                merged.update(h.hex() for h in sorted(self._banned))
-                hub["banned_identities"] = sorted(merged)
-
-                new_text = dumps(doc)
-                with open(cfg_path, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-
-                if st is not None:
-                    try:
-                        os.chmod(cfg_path, st.st_mode)
-                    except Exception:
-                        pass
-        except Exception as e:
-            self._emit_notice(
-                outgoing, link, room, f"ban updated (persist failed: {e})"
-            )
-
-    def _is_trusted(self, peer_hash: bytes | None) -> bool:
-        if not peer_hash:
-            return False
-        with self._state_lock:
-            return peer_hash in self._trusted
 
     def _notice_to(self, link: RNS.Link, room: str | None, text: str) -> None:
         if self.identity is None:

@@ -45,7 +45,7 @@ class CommandHandler:
         cmd = parts[0].lower()
 
         if cmd == "reload":
-            if not self.hub._is_server_op(peer_hash):
+            if not self.hub.trust_manager.is_server_op(peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -61,7 +61,7 @@ class CommandHandler:
 
         # Global/server-operator commands
         if cmd == "stats":
-            if not self.hub._is_server_op(peer_hash):
+            if not self.hub.trust_manager.is_server_op(peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -125,7 +125,7 @@ class CommandHandler:
             # Check if room is private - only server operators can see private rooms
             st = self.hub.room_manager._room_state_get(r)
             if st and st.get("private"):
-                if not self.hub._is_server_op(peer_hash):
+                if not self.hub.trust_manager.is_server_op(peer_hash):
                     self._emit_notice(outgoing, link, None, f"room {r} is private")
                     return True
 
@@ -207,7 +207,7 @@ class CommandHandler:
             return True
 
         if cmd == "kline":
-            if not self.hub._is_server_op(peer_hash):
+            if not self.hub.trust_manager.is_server_op(peer_hash):
                 if self.hub.identity is not None:
                     self._emit_error(
                         outgoing,
@@ -230,7 +230,8 @@ class CommandHandler:
 
             op = parts[1].strip().lower()
             if op == "list":
-                items = sorted(h.hex() for h in self.hub._banned)
+                with self.hub._state_lock:
+                    items = sorted(h.hex() for h in self.hub.trust_manager._banned)
                 self._emit_notice(
                     outgoing,
                     link,
@@ -261,8 +262,8 @@ class CommandHandler:
                     tsess = self.hub.session_manager.sessions.get(target_link)
                     ph = tsess.get("peer") if tsess else None
                     if isinstance(ph, (bytes, bytearray)):
-                        self.hub._banned.add(bytes(ph))
-                        self.hub._persist_banned_identities_to_config(link, None, outgoing)
+                        self.hub.trust_manager.add_ban(bytes(ph))
+                        self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
                     try:
                         target_link.teardown()
                     except Exception:
@@ -285,8 +286,8 @@ class CommandHandler:
                 except Exception as e:
                     self._emit_notice(outgoing, link, None, f"bad identity hash: {e}")
                     return True
-                self.hub._banned.add(h)
-                self.hub._persist_banned_identities_to_config(link, None, outgoing)
+                self.hub.trust_manager.add_ban(h)
+                self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
                 self._emit_notice(outgoing, link, None, f"kline added for {h.hex()}")
                 return True
 
@@ -297,9 +298,9 @@ class CommandHandler:
                 self._emit_notice(outgoing, link, None, f"bad identity hash: {e}")
                 return True
 
-            if h in self.hub._banned:
-                self.hub._banned.discard(h)
-                self.hub._persist_banned_identities_to_config(link, None, outgoing)
+            if self.hub.trust_manager.is_banned(h):
+                self.hub.trust_manager.remove_ban(h)
+                self.hub.trust_manager.persist_banned_identities_to_config(link, None, outgoing)
                 self._emit_notice(outgoing, link, None, f"kline removed for {h.hex()}")
             else:
                 self._emit_notice(outgoing, link, None, f"not klined: {h.hex()}")

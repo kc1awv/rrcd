@@ -90,8 +90,9 @@ class StatsManager:
             memberships = room_stats["memberships"]
             top_rooms = room_stats["top_rooms"]
 
-            trusted_count = len(self.hub._trusted)
-            banned_count = len(self.hub._banned)
+            trust_stats = self.hub.trust_manager.get_stats()
+            trusted_count = trust_stats["trusted_count"]
+            banned_count = trust_stats["banned_count"]
             c = dict(self._counters)
 
         lines: list[str] = []

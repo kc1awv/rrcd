@@ -238,7 +238,7 @@ class RoomManager:
         """Check if peer is a room operator."""
         if peer_hash is None:
             return False
-        if self.hub._is_server_op(peer_hash):
+        if self.hub.trust_manager.is_server_op(peer_hash):
             return True
         st = self._room_state_ensure(room)
         founder = st.get("founder")
