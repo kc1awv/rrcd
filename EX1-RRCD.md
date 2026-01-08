@@ -271,6 +271,88 @@ periodically.
 room_invite_timeout_s = 900.0
 ```
 
+## Extension: JOINED and PARTED Room Notifications
+
+The RRC specification defines `JOINED` and `PARTED` messages but doesn't specify
+whether room members should be notified when users join or leave. rrcd
+implements dual-mode notifications:
+
+### JOIN Behavior
+
+When a user joins a room:
+
+1. **Joining user receives**: A `JOINED` message containing the full list of
+   room members (if `include_joined_member_list` is enabled in config). This
+   allows the client to know who is already in the room.
+   
+   ```python
+   {
+       0: 1,                    # protocol version
+       1: T_JOINED,             # message type 
+       2: <msg-id>,
+       3: <timestamp>,
+       4: <hub-identity-hash>,  # src
+       5: <room-name>,
+       6: [<hash1>, <hash2>, ...] # body: list of all member identity hashes
+   }
+   ```
+
+2. **Existing room members receive**: A `JOINED` message containing **only** the
+   identity hash of the user who just joined. This allows room members to update
+   their member lists.
+   
+   ```python
+   {
+       0: 1,
+       1: T_JOINED,
+       2: <msg-id>,
+       3: <timestamp>,
+       4: <hub-identity-hash>,
+       5: <room-name>,
+       6: [<new-user-hash>]     # body: single-element list
+   }
+   ```
+
+### PART Behavior
+
+When a user leaves a room:
+
+1. **Parting user receives**: A `PARTED` message containing the list of
+   remaining room members (if `include_joined_member_list` is enabled).
+   
+2. **Remaining room members receive**: A `PARTED` message containing **only**
+   the identity hash of the user who just left.
+   
+   ```python
+   {
+       0: 1,
+       1: T_PARTED,
+       2: <msg-id>,
+       3: <timestamp>,
+       4: <hub-identity-hash>,
+       5: <room-name>,
+       6: [<departed-user-hash>] # body: single-element list
+   }
+   ```
+
+### Configuration
+
+```toml
+include_joined_member_list = true  # default: true
+```
+
+When disabled, all `JOINED` and `PARTED` messages have `null` or empty bodies.
+
+### Client Implementation Notes
+
+- **JOINED bodies** may contain either a full member list (multiple hashes) or a
+  single hash. Clients should handle both cases.
+- **PARTED bodies** follow the same pattern.
+- The message source (`K_SRC`) is always the hub's identity hash, not the
+  joining/parting user.
+- This extension allows clients to maintain accurate room member lists without
+  polling or issuing `/who` commands after every join/part.
+
 ## Extension: Nickname Normalization
 
 The RRC spec says nicknames are "advisory" and may be "ridiculous." rrcd

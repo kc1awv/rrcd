@@ -2,6 +2,14 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.2.1 - 2026-01-08
+
+- **JOINED/PARTED room notifications**: Existing room members now receive real-time notifications when users join or leave
+  - When a user joins a room, existing members receive a `JOINED` message with the joining user's identity hash
+  - When a user leaves a room, remaining members receive a `PARTED` message with the parting user's identity hash
+  - Joining/parting users continue to receive the full member list (when `include_joined_member_list` is enabled)
+  - See EX1-RRCD.md for detailed protocol documentation
+
 ## 0.2.0 - 2026-01-07
 
 - **Major internal refactoring**: Improved code organization and maintainability
