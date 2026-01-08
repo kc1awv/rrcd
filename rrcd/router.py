@@ -492,6 +492,24 @@ class MessageRouter:
 
         self.hub.room_manager.touch_room(r)
 
+        # Notify existing room members about the new joiner
+        # Send JOINED message with single identity hash to existing members
+        existing_members = [
+            member_link
+            for member_link in self.hub.room_manager.get_room_members(r)
+            if member_link != link
+        ]
+        if existing_members:
+            member_notification = make_envelope(
+                T_JOINED, src=self.hub.identity.hash, room=r, body=[peer_hash]
+            )
+            member_notification_payload = encode(member_notification)
+            for member_link in existing_members:
+                self.hub.message_helper.queue_payload(
+                    outgoing, member_link, member_notification_payload
+                )
+
+        # Send JOINED message with full member list to the joining user
         joined_body = None
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
@@ -563,6 +581,14 @@ class MessageRouter:
             return
 
         sess["rooms"].discard(r)
+        
+        # Get remaining members before removing the parting user
+        remaining_members = [
+            member_link
+            for member_link in self.hub.room_manager.get_room_members(r)
+            if member_link != link
+        ]
+        
         if self.hub.room_manager.get_room_members(r):
             self.hub.room_manager.remove_member(r, link)
             if not self.hub.room_manager.get_room_members(r):
@@ -575,6 +601,19 @@ class MessageRouter:
                 if st is not None and not st.get("registered"):
                     self.hub.room_manager._room_state.pop(r, None)
 
+        # Notify remaining members about the user parting
+        # Send PARTED message with single identity hash to remaining members
+        if remaining_members:
+            member_notification = make_envelope(
+                T_PARTED, src=self.hub.identity.hash, room=r, body=[peer_hash]
+            )
+            member_notification_payload = encode(member_notification)
+            for member_link in remaining_members:
+                self.hub.message_helper.queue_payload(
+                    outgoing, member_link, member_notification_payload
+                )
+
+        # Send PARTED message with current member list to the parting user
         parted_body = None
         if self.hub.config.include_joined_member_list:
             members: list[bytes] = []
