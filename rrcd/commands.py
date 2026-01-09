@@ -123,8 +123,8 @@ class CommandHandler:
                 )
                 return True
 
-            st = self.hub.room_manager._room_state_get(r)
-            if st and st.get("private"):
+            room_state = self.hub.room_manager._room_state_get(r)
+            if room_state is not None and room_state.get("private"):
                 if not self.hub.trust_manager.is_server_op(peer_hash):
                     self.hub.message_helper.emit_notice(
                         outgoing, link, None, f"room {r} is private"
@@ -882,7 +882,11 @@ class CommandHandler:
                 for other in list(self.hub.room_manager.get_room_members(r)):
                     s = self.hub.session_manager.sessions.get(other)
                     ph = s.get("peer") if s else None
-                    if isinstance(ph, (bytes, bytearray)) and bytes(ph) == target_hash:
+                    if (
+                        isinstance(ph, (bytes, bytearray))
+                        and bytes(ph) == target_hash
+                        and s is not None
+                    ):
                         s.get("rooms", set()).discard(r)
                         self.hub.room_manager.get_room_members(r).discard(other)
                         if self.hub.identity is not None:
@@ -1022,8 +1026,8 @@ class CommandHandler:
                     return True
                 target_hash = bytes(ph)
 
-                key = st.get("key")
-                is_keyed = isinstance(key, str) and bool(key)
+                key_val = st.get("key")
+                is_keyed = isinstance(key_val, str) and bool(key_val)
                 is_invite_only = bool(st.get("invite_only", False))
 
                 if is_keyed:

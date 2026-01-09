@@ -386,8 +386,11 @@ def main(argv: list[str] | None = None) -> None:
     # Use ConfigManager to load config file
     if config_path:
         from .config import ConfigManager
+
         # Create temporary manager for loading
-        temp_hub = type('obj', (object,), {'config': cfg, 'log': None, '_state_lock': None})()
+        temp_hub = type(
+            "obj", (object,), {"config": cfg, "log": None, "_state_lock": None}
+        )()
         temp_mgr = ConfigManager(temp_hub)  # type: ignore
         data = temp_mgr.load_toml(config_path)
         cfg = temp_mgr.apply_config_data(cfg, data)

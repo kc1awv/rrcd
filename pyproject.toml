@@ -35,7 +35,9 @@ Issues = "https://github.com/kc1awv/rrcd/issues"
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
+  "black>=24.0.0",
   "ruff>=0.6.0",
+  "mypy>=1.0.0",
 ]
 
 [project.scripts]
@@ -54,3 +56,13 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = "RNS.*"
+ignore_missing_imports = true

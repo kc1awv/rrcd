@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 class StatsManager:
     """
     Manages hub statistics collection and reporting.
-    
+
     Tracks counters for:
     - Bytes in/out
     - Packets processed
@@ -28,10 +28,10 @@ class StatsManager:
     def __init__(self, hub: HubService) -> None:
         self.hub = hub
         self.log = hub.log
-        
+
         self.started_wall_time: float | None = None
         self.started_monotonic: float | None = None
-        
+
         self._counters: dict[str, int] = {
             "bytes_in": 0,
             "bytes_out": 0,
@@ -71,7 +71,7 @@ class StatsManager:
     def format_stats(self) -> str:
         """Format current statistics as a human-readable string."""
         from . import __version__
-        
+
         now_mono = time.monotonic()
         started_mono = self.started_monotonic
         uptime_s = (now_mono - started_mono) if started_mono is not None else 0.0

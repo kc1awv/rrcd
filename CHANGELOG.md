@@ -10,6 +10,12 @@ This project follows the versioning policy in VERSIONING.md.
   - Joining/parting users continue to receive the full member list (when `include_joined_member_list` is enabled)
   - See EX1-RRCD.md for detailed protocol documentation
 
+Minor fixes:
+
+- fixed JOINED/PARTED notification logic to ensure correct member list updates
+- improved type checking and annotations in several modules
+- added black, ruff, and mypy to development dependencies for code quality enforcement
+
 ## 0.2.0 - 2026-01-07
 
 - **Major internal refactoring**: Improved code organization and maintainability

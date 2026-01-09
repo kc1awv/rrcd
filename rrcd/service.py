@@ -60,8 +60,8 @@ class HubService:
         self.identity = self._load_identity(self.config.identity_path)
 
         self.trust_manager.load_from_config(
-            self.config.trusted_identities,
-            self.config.banned_identities,
+            list(self.config.trusted_identities),
+            list(self.config.banned_identities),
         )
 
         self._load_registered_rooms_from_registry()
@@ -363,7 +363,7 @@ class HubService:
         """Resolve token to identity hash. Returns hash if successful, None otherwise.
         For ambiguous matches, use _resolve_identity_hash_with_matches instead.
         """
-        target_link = self._find_target_link(token, room=room)
+        target_link = self.command_handler._find_target_link(token, room=room)
         if target_link is not None:
             s = self.session_manager.sessions.get(target_link)
             ph = s.get("peer") if s else None
@@ -381,7 +381,7 @@ class HubService:
         Returns (hash, matches) tuple. Hash is None if ambiguous or not found.
         Use matches list to provide helpful error messages.
         """
-        matches = self._find_target_links(token, room=room)
+        matches = self.command_handler._find_target_links(token, room=room)
 
         if len(matches) == 1:
             s = self.session_manager.sessions.get(matches[0])

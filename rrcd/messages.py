@@ -37,7 +37,7 @@ class MessageHelper:
         """Check if payload fits within link MDU without creating/packing packets."""
         try:
             if hasattr(link, "MDU") and link.MDU is not None:
-                return len(payload) <= link.MDU
+                return bool(len(payload) <= link.MDU)
             pkt = RNS.Packet(link, payload)
             pkt.pack()
             return True
