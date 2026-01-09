@@ -124,41 +124,28 @@ class SessionManager:
         if nick:
             self.update_nick_index(link, nick, None)
 
-        # Notify remaining members and remove from rooms
         peer_hash = bytes(peer) if isinstance(peer, (bytes, bytearray)) else None
         for room in list(sess["rooms"]):
-            # Get remaining members before removing the disconnecting user
             remaining_members = [
                 member_link
                 for member_link in self.hub.room_manager.get_room_members(room)
                 if member_link != link
             ]
 
-            # Remove the disconnecting user from the room
             self.hub.room_manager.remove_member(room, link)
 
-            # Send PARTED notification to remaining members
             if remaining_members and peer_hash and self.hub.identity:
-                notification_body = (
-                    [peer_hash] if self.hub.config.include_joined_member_list else None
-                )
+                notification_body = [peer_hash] if self.hub.config.include_joined_member_list else None
                 member_notification = make_envelope(
-                    T_PARTED,
-                    src=self.hub.identity.hash,
-                    room=room,
-                    body=notification_body,
+                    T_PARTED, src=self.hub.identity.hash, room=room, body=notification_body
                 )
                 member_notification_payload = encode(member_notification)
                 for member_link in remaining_members:
                     try:
                         import RNS
-
                         RNS.Packet(member_link, member_notification_payload).send()
-                        self.hub.stats_manager.inc(
-                            "bytes_out", len(member_notification_payload)
-                        )
+                        self.hub.stats_manager.inc("bytes_out", len(member_notification_payload))
                     except Exception:
-                        # Link may already be closed or in bad state, ignore send failures
                         pass
 
         return peer, nick, rooms_count
