@@ -315,25 +315,21 @@ When a user joins a room:
 
 ### PART Behavior
 
-When a user leaves a room:
+When a user leaves a room, all users (including the departing user) receive a
+`PARTED` message containing **only** the departing user's identity hash (if
+`include_joined_member_list` is enabled).
 
-1. **Parting user receives**: A `PARTED` message containing the list of
-   remaining room members (if `include_joined_member_list` is enabled).
-   
-2. **Remaining room members receive**: A `PARTED` message containing **only**
-   the identity hash of the user who just left.
-   
-   ```python
-   {
-       0: 1,
-       1: T_PARTED,
-       2: <msg-id>,
-       3: <timestamp>,
-       4: <hub-identity-hash>,
-       5: <room-name>,
-       6: [<departed-user-hash>] # body: single-element list
-   }
-   ```
+```python
+{
+    0: 1,
+    1: T_PARTED,
+    2: <msg-id>,
+    3: <timestamp>,
+    4: <hub-identity-hash>,
+    5: <room-name>,
+    6: [<departed-user-hash>] # body: single-element list
+}
+```
 
 ### Configuration
 
@@ -347,7 +343,7 @@ When disabled, all `JOINED` and `PARTED` messages have `null` or empty bodies.
 
 - **JOINED bodies** may contain either a full member list (multiple hashes) or a
   single hash. Clients should handle both cases.
-- **PARTED bodies** follow the same pattern.
+- **PARTED bodies** always contain a single hash (the departing user's identity).
 - The message source (`K_SRC`) is always the hub's identity hash, not the
   joining/parting user.
 - This extension allows clients to maintain accurate room member lists without

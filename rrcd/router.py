@@ -614,15 +614,9 @@ class MessageRouter:
                     outgoing, member_link, member_notification_payload
                 )
 
-        parted_body = None
-        if self.hub.config.include_joined_member_list:
-            members: list[bytes] = []
-            for member_link in self.hub.room_manager.get_room_members(r):
-                s = self.hub.session_manager.sessions.get(member_link)
-                ph = s.get("peer") if s else None
-                if isinstance(ph, (bytes, bytearray)):
-                    members.append(bytes(ph))
-            parted_body = members
+        parted_body = (
+            [peer_hash] if self.hub.config.include_joined_member_list else None
+        )
 
         if self.hub.identity is not None:
             parted = make_envelope(
