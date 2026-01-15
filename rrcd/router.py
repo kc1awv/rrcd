@@ -686,6 +686,26 @@ class MessageRouter:
                         text="message requires room name",
                     )
                 return
+            
+            # Validate message body size (UTF-8 bytes)
+            if isinstance(body, str):
+                body_bytes = len(body.encode('utf-8', errors='replace'))
+                if body_bytes > self.hub.config.max_msg_body_bytes:
+                    if self.hub.identity is not None:
+                        self.hub.message_helper.emit_error(
+                            outgoing,
+                            link,
+                            src=self.hub.identity.hash,
+                            text=f"message too large: {body_bytes} bytes > {self.hub.config.max_msg_body_bytes} bytes",
+                        )
+                    self.log.info(
+                        "Rejected oversized message peer=%s nick=%r body_bytes=%s limit=%s",
+                        self.hub._fmt_hash(peer_hash),
+                        sess.get("nick"),
+                        body_bytes,
+                        self.hub.config.max_msg_body_bytes,
+                    )
+                    return
         elif t == T_NOTICE:
             if not isinstance(room, str) or not room:
                 return

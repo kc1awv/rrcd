@@ -151,8 +151,15 @@ include_joined_member_list = false
 nick_max_chars = 32
 
 # Limits.
+# These limits help mitigate abuse and resource exhaustion, but can be adjusted
+# based on your use case.
+#
+# N.B. max_msg_body_bytes should not allow messages so large that they cannot
+# fit within the link MTU after UTF-8 encoding and envelope overhead. The
+# default of 350 bytes is a safe choice for the default Reticulum MTU of 500.
 max_rooms_per_session = 32
 max_room_name_len = 64
+max_msg_body_bytes = 350
 rate_limit_msgs_per_minute = 240
 
 # Hub-initiated liveness checks (0 disables).
@@ -332,6 +339,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Per-link message rate limit",
     )
+    p.add_argument(
+        "--max-msg-body-bytes",
+        type=int,
+        default=None,
+        help="Maximum message body size in UTF-8 bytes",
+    )
 
     p.add_argument(
         "--ping-interval",
@@ -420,6 +433,8 @@ def main(argv: list[str] | None = None) -> None:
         cfg = replace(
             cfg, rate_limit_msgs_per_minute=int(args.rate_limit_msgs_per_minute)
         )
+    if args.max_msg_body_bytes is not None:
+        cfg = replace(cfg, max_msg_body_bytes=int(args.max_msg_body_bytes))
 
     if args.ping_interval is not None:
         cfg = replace(cfg, ping_interval_s=float(args.ping_interval))
