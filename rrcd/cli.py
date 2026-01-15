@@ -146,13 +146,17 @@ room_invite_timeout_s = 900.0
 # Optional behaviors.
 include_joined_member_list = false
 
-# Nickname policy.
-# Maximum accepted nickname length (Unicode characters). 0 disables length limiting.
-nick_max_chars = 32
-
 # Limits.
+# These limits help mitigate abuse and resource exhaustion, but can be adjusted
+# based on your use case.
+#
+# N.B. max_msg_body_bytes should not allow messages so large that they cannot
+# fit within the link MTU after UTF-8 encoding and envelope overhead. The
+# default of 350 bytes is a safe choice for the default Reticulum MTU of 500.
+max_nick_bytes = 32
+max_room_name_bytes = 64
+max_msg_body_bytes = 350
 max_rooms_per_session = 32
-max_room_name_len = 64
 rate_limit_msgs_per_minute = 240
 
 # Hub-initiated liveness checks (0 disables).
@@ -323,7 +327,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--max-rooms", type=int, default=None, help="Max rooms per session")
     p.add_argument(
-        "--max-room-name-len", type=int, default=None, help="Max room name length"
+        "--max-nick-bytes",
+        type=int,
+        default=None,
+        help="Max nickname size in UTF-8 bytes",
+    )
+    p.add_argument(
+        "--max-room-name-bytes",
+        type=int,
+        default=None,
+        help="Max room name size in UTF-8 bytes",
     )
 
     p.add_argument(
@@ -331,6 +344,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Per-link message rate limit",
+    )
+    p.add_argument(
+        "--max-msg-body-bytes",
+        type=int,
+        default=None,
+        help="Maximum message body size in UTF-8 bytes",
     )
 
     p.add_argument(
@@ -413,13 +432,17 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.max_rooms is not None:
         cfg = replace(cfg, max_rooms_per_session=int(args.max_rooms))
-    if args.max_room_name_len is not None:
-        cfg = replace(cfg, max_room_name_len=int(args.max_room_name_len))
+    if args.max_nick_bytes is not None:
+        cfg = replace(cfg, max_nick_bytes=int(args.max_nick_bytes))
+    if args.max_room_name_bytes is not None:
+        cfg = replace(cfg, max_room_name_bytes=int(args.max_room_name_bytes))
 
     if args.rate_limit_msgs_per_minute is not None:
         cfg = replace(
             cfg, rate_limit_msgs_per_minute=int(args.rate_limit_msgs_per_minute)
         )
+    if args.max_msg_body_bytes is not None:
+        cfg = replace(cfg, max_msg_body_bytes=int(args.max_msg_body_bytes))
 
     if args.ping_interval is not None:
         cfg = replace(cfg, ping_interval_s=float(args.ping_interval))

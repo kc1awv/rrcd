@@ -300,7 +300,7 @@ class MessageRouter:
         new_nick = None
 
         if isinstance(nick, str):
-            n = normalize_nick(nick, max_chars=self.hub.config.nick_max_chars)
+            n = normalize_nick(nick, max_bytes=self.hub.config.max_nick_bytes)
             if n is not None:
                 new_nick = n
                 sess["nick"] = n
@@ -311,7 +311,7 @@ class MessageRouter:
             if new_nick is None:
                 legacy_nick = body.get(B_HELLO_NICK_LEGACY)
                 n2 = normalize_nick(
-                    legacy_nick, max_chars=self.hub.config.nick_max_chars
+                    legacy_nick, max_bytes=self.hub.config.max_nick_bytes
                 )
                 if n2 is not None:
                     new_nick = n2
@@ -360,7 +360,7 @@ class MessageRouter:
         new_nick = None
 
         if isinstance(nick, str):
-            n = normalize_nick(nick, max_chars=self.hub.config.nick_max_chars)
+            n = normalize_nick(nick, max_bytes=self.hub.config.max_nick_bytes)
             if n is not None:
                 new_nick = n
                 sess["nick"] = n
@@ -370,7 +370,7 @@ class MessageRouter:
             if new_nick is None:
                 legacy_nick = body.get(B_HELLO_NICK_LEGACY)
                 n2 = normalize_nick(
-                    legacy_nick, max_chars=self.hub.config.nick_max_chars
+                    legacy_nick, max_bytes=self.hub.config.max_nick_bytes
                 )
                 if n2 is not None:
                     new_nick = n2
@@ -686,6 +686,26 @@ class MessageRouter:
                         text="message requires room name",
                     )
                 return
+
+            # Validate message body size (UTF-8 bytes)
+            if isinstance(body, str):
+                body_bytes = len(body.encode("utf-8", errors="replace"))
+                if body_bytes > self.hub.config.max_msg_body_bytes:
+                    if self.hub.identity is not None:
+                        self.hub.message_helper.emit_error(
+                            outgoing,
+                            link,
+                            src=self.hub.identity.hash,
+                            text=f"message too large: {body_bytes} bytes > {self.hub.config.max_msg_body_bytes} bytes",
+                        )
+                    self.log.info(
+                        "Rejected oversized message peer=%s nick=%r body_bytes=%s limit=%s",
+                        self.hub._fmt_hash(peer_hash),
+                        sess.get("nick"),
+                        body_bytes,
+                        self.hub.config.max_msg_body_bytes,
+                    )
+                    return
         elif t == T_NOTICE:
             if not isinstance(room, str) or not room:
                 return
@@ -761,7 +781,7 @@ class MessageRouter:
 
         incoming_nick = env.get(K_NICK)
         if incoming_nick is not None:
-            n = normalize_nick(incoming_nick, max_chars=self.hub.config.nick_max_chars)
+            n = normalize_nick(incoming_nick, max_bytes=self.hub.config.max_nick_bytes)
             if n is not None:
                 old_session_nick = sess.get("nick")
                 if old_session_nick != n:
@@ -774,7 +794,7 @@ class MessageRouter:
                 env.pop(K_NICK, None)
         else:
             nick = sess.get("nick")
-            n = normalize_nick(nick, max_chars=self.hub.config.nick_max_chars)
+            n = normalize_nick(nick, max_bytes=self.hub.config.max_nick_bytes)
             if n is not None:
                 env[K_NICK] = n
 

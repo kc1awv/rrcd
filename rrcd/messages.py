@@ -7,7 +7,19 @@ from typing import TYPE_CHECKING, Any
 import RNS
 
 from .codec import encode
-from .constants import B_WELCOME_HUB, B_WELCOME_VER, T_ERROR, T_NOTICE, T_WELCOME
+from .constants import (
+    B_LIMIT_MAX_MSG_BODY_BYTES,
+    B_LIMIT_MAX_NICK_BYTES,
+    B_LIMIT_MAX_ROOM_NAME_BYTES,
+    B_LIMIT_MAX_ROOMS_PER_SESSION,
+    B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE,
+    B_WELCOME_HUB,
+    B_WELCOME_LIMITS,
+    B_WELCOME_VER,
+    T_ERROR,
+    T_NOTICE,
+    T_WELCOME,
+)
 from .envelope import make_envelope
 
 if TYPE_CHECKING:
@@ -118,9 +130,19 @@ class MessageHelper:
 
         from . import __version__
 
+        # Build hub limits map with integer keys per spec
+        limits: dict[int, int] = {
+            B_LIMIT_MAX_NICK_BYTES: self.hub.config.max_nick_bytes,
+            B_LIMIT_MAX_ROOM_NAME_BYTES: self.hub.config.max_room_name_bytes,
+            B_LIMIT_MAX_MSG_BODY_BYTES: self.hub.config.max_msg_body_bytes,
+            B_LIMIT_MAX_ROOMS_PER_SESSION: self.hub.config.max_rooms_per_session,
+            B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE: self.hub.config.rate_limit_msgs_per_minute,
+        }
+
         body_w: dict[int, Any] = {
             B_WELCOME_HUB: self.hub.config.hub_name,
             B_WELCOME_VER: str(__version__),
+            B_WELCOME_LIMITS: limits,
         }
 
         welcome = make_envelope(T_WELCOME, src=self.hub.identity.hash, body=body_w)

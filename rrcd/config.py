@@ -25,9 +25,10 @@ class HubRuntimeConfig:
     room_registry_prune_interval_s: float = 3600.0
     room_invite_timeout_s: float = 900.0
     include_joined_member_list: bool = False
-    nick_max_chars: int = 32
+    max_nick_bytes: int = 32
     max_rooms_per_session: int = 32
-    max_room_name_len: int = 64
+    max_room_name_bytes: int = 64
+    max_msg_body_bytes: int = 350
     rate_limit_msgs_per_minute: int = 240
     ping_interval_s: float = 0.0
     ping_timeout_s: float = 0.0

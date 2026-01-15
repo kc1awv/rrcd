@@ -97,10 +97,10 @@ class HubService:
             self.destination.hash.hex() if self.destination else "-",
         )
         self.log.info(
-            "Policy nick_max_chars=%s max_rooms=%s max_room_name_len=%s rate_limit_msgs_per_minute=%s",
-            self.config.nick_max_chars,
+            "Policy max_nick_bytes=%s max_rooms=%s max_room_name_bytes=%s rate_limit_msgs_per_minute=%s",
+            self.config.max_nick_bytes,
             self.config.max_rooms_per_session,
-            self.config.max_room_name_len,
+            self.config.max_room_name_bytes,
             self.config.rate_limit_msgs_per_minute,
         )
 
@@ -330,7 +330,7 @@ class HubService:
             f"banned={len(old_banned)}->{len(new_banned)} "
             f"registered_rooms={len(old_registry)}->{len(new_registry)}"
         )
-        lines.append(f"policy: nick_max_chars={new_cfg.nick_max_chars}")
+        lines.append(f"policy: max_nick_bytes={new_cfg.max_nick_bytes}")
 
         if cfg_changes:
             lines.append("config_changes:")
@@ -503,8 +503,12 @@ class HubService:
         r = room.strip().lower()
         if not r:
             raise ValueError("room name must not be empty")
-        if len(r) > int(self.config.max_room_name_len):
-            raise ValueError("room name too long")
+        # Check UTF-8 byte length
+        room_bytes = len(r.encode("utf-8", errors="replace"))
+        if room_bytes > int(self.config.max_room_name_bytes):
+            raise ValueError(
+                f"room name too long: {room_bytes} bytes > {self.config.max_room_name_bytes} bytes"
+            )
         return r
 
     def _on_packet(self, link: RNS.Link, data: bytes) -> None:

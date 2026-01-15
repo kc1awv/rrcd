@@ -2,6 +2,15 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.2.2 - 2026-01-09
+
+- **Protocol constants and welcome message limits**: Added new constants for hub
+   limits in welcome messages and updated message construction accordingly
+- Added `max_nick_bytes` configuration option to specify maximum nickname size in UTF-8 bytes
+- Updated CLI to allow overriding `max_nick_bytes` via command-line argument
+- Updated documentation to reflect new nickname size limit configuration
+- 
+
 ## 0.2.1 - 2026-01-08
 
 - **JOINED/PARTED room notifications**: Existing room members now receive real-time notifications when users join or leave
