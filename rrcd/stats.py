@@ -109,8 +109,8 @@ class StatsManager:
         lines.append(
             f"limits: rate_limit_msgs_per_minute={self.hub.config.rate_limit_msgs_per_minute} "
             f"max_rooms_per_session={self.hub.config.max_rooms_per_session} "
-            f"max_room_name_len={self.hub.config.max_room_name_len} "
-            f"nick_max_chars={self.hub.config.nick_max_chars}"
+            f"max_room_name_bytes={self.hub.config.max_room_name_bytes} "
+            f"max_nick_bytes={self.hub.config.max_nick_bytes}"
         )
         lines.append(
             f"features: ping_interval_s={self.hub.config.ping_interval_s} "
