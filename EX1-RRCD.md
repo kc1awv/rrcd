@@ -134,12 +134,28 @@ We don't do that.
 
 - `B_WELCOME_HUB` (key `0`): Hub name (string)
 - `B_WELCOME_VER` (key `1`): Hub version (string)
-- `B_WELCOME_CAPS` (key `2`): Capabilities map (optional, currently unused)
+- `B_WELCOME_CAPS` (key `2`): Capabilities map (reserved for future use)
+- `B_WELCOME_LIMITS` (key `3`): Hub limits map (see below)
 
 That's it. No greeting, no room list, no user count. Why? Because `WELCOME`
 needs to fit in a single packet on low-MTU links. If the hub has a greeting
 configured, it's delivered **after** `WELCOME` via one or more `NOTICE` messages
 (chunked to fit MTU, or sent via resource transfer if supported).
+
+### Hub Limits Map
+
+The `B_WELCOME_LIMITS` field contains a map with unsigned integer keys that
+inform clients about operational limits:
+
+- `B_LIMIT_MAX_NICK_BYTES` (key `0`): Maximum nickname length in bytes
+- `B_LIMIT_MAX_ROOM_NAME_BYTES` (key `1`): Maximum room name length in bytes
+- `B_LIMIT_MAX_MSG_BODY_BYTES` (key `2`): Maximum message body length in bytes
+- `B_LIMIT_MAX_ROOMS_PER_SESSION` (key `3`): Maximum rooms a client can join
+- `B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE` (key `4`): Messages per minute limit
+
+**Important**: These limits are **enforced by the hub**. Clients may use them to
+validate input before sending messages, but the hub will reject any messages
+that violate these limits regardless of whether the client honors them or not.
 
 **Client implementers**: Don't expect the hub greeting in the `WELCOME` body.
 Wait for the `NOTICE` message(s) that follow. Or don't. We're not your
