@@ -22,6 +22,7 @@ from .constants import (
     T_HELLO,
     T_JOIN,
     T_JOINED,
+    T_ACTION,
     T_MSG,
     T_NOTICE,
     T_PART,
@@ -151,7 +152,7 @@ class MessageRouter:
             self._handle_join(link, sess, peer_hash, env, outgoing)
         elif t == T_PART:
             self._handle_part(link, sess, peer_hash, env, outgoing)
-        elif t in (T_MSG, T_NOTICE):
+        elif t in (T_MSG, T_NOTICE, T_ACTION):
             self._handle_message(link, sess, peer_hash, env, outgoing)
         elif t == T_PING:
             self._handle_ping(link, env, outgoing)
@@ -640,12 +641,12 @@ class MessageRouter:
         env: dict,
         outgoing: list[tuple[RNS.Link, bytes]],
     ) -> None:
-        """Handle MSG and NOTICE messages."""
+        """Handle MSG, NOTICE, and ACTION messages."""
         t = env.get(K_T)
         room = env.get(K_ROOM)
         body = env.get(K_BODY)
 
-        if isinstance(body, str):
+        if t in (T_MSG, T_NOTICE) and isinstance(body, str):
             cmdline = body.strip()
             if cmdline.startswith("/"):
                 if self.log.isEnabledFor(logging.DEBUG):
@@ -676,7 +677,7 @@ class MessageRouter:
                     )
                 return
 
-        if t == T_MSG:
+        if t in (T_MSG, T_ACTION):
             if not isinstance(room, str) or not room:
                 if self.hub.identity is not None:
                     self.hub.message_helper.emit_error(
@@ -815,6 +816,8 @@ class MessageRouter:
 
         if t == T_MSG:
             self.hub.stats_manager.inc("msgs_forwarded")
+        elif t == T_ACTION:
+            self.hub.stats_manager.inc("actions_forwarded")
         else:
             self.hub.stats_manager.inc("notices_forwarded")
 

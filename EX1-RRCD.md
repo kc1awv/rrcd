@@ -20,8 +20,8 @@ rrcd implements the core RRC protocol as specified, with the following
 principles:
 
 1. **Wire format compatibility first**: All core message types (`HELLO`,
-    `WELCOME`, `JOIN`, `JOINED`, `PART`, `PARTED`, `MSG`, `NOTICE`, `PING`,
-    `PONG`, `ERROR`) are implemented per spec.
+    `WELCOME`, `JOIN`, `JOINED`, `PART`, `PARTED`, `MSG`, `NOTICE`, `ACTION`,
+    `PING`, `PONG`, `ERROR`) are implemented per spec.
 2. **Envelope keys are unsigned integers**: If you send string keys in your CBOR
     maps, we will reject your messages. The spec says unsigned integers. We mean
     it.
@@ -35,6 +35,22 @@ principles:
 **Message Type**: `50` (`T_RESOURCE_ENVELOPE`)  
 **Capability Key**: `0` (`CAP_RESOURCE_ENVELOPE`)  
 **Status**: Implemented (optional, configurable)
+
+## Extension: ACTION Capability Signaling
+
+**Capability Key**: `1` (`CAP_ACTION`)  
+**Status**: Implemented (advisory)
+
+`rrcd` advertises `CAP_ACTION` in `WELCOME` capabilities to indicate that the
+hub supports forwarding `ACTION` messages (type `22`) as first-class room
+content.
+
+This capability is advisory. Clients are free to choose their own local command
+syntax to generate `ACTION` envelopes, and clients are free to render incoming
+`ACTION` messages however they like.
+
+`rrcd` does not parse slash commands from `ACTION` bodies. Slash-command
+handling remains a `MSG`/`NOTICE` convention.
 
 The RRC specification has no concept of large message delivery beyond "chunk it
 yourself, good luck." This is fine for small messages but becomes obnoxious for:
@@ -482,7 +498,7 @@ If you're implementing a client or another hub, here's what you need to know:
 
 ### Minimum Compatibility (Basic RRC Client)
 - Implement core message types (HELLO, WELCOME, JOIN, JOINED, PART, PARTED, MSG,
-   NOTICE, PING, PONG, ERROR)
+    NOTICE, ACTION, PING, PONG, ERROR)
 - Use CBOR encoding
 - Use unsigned integer keys in envelopes and bodies
 - Handle `K_NICK` (envelope key 7) for nicknames
@@ -490,6 +506,8 @@ If you're implementing a client or another hub, here's what you need to know:
 
 ### Enhanced Compatibility (Recommended)
 - Support `T_RESOURCE_ENVELOPE` (message type 50) and Reticulum resources
+- Handle `ACTION` (message type 22) as room content (rendering is client-defined)
+- Advertise `CAP_ACTION` in your `HELLO` capabilities if you support ACTION UX
 - Advertise `CAP_RESOURCE_ENVELOPE` in your `HELLO` capabilities if you support
    resources
 - Expect hub greeting to arrive via `NOTICE` messages after `WELCOME`

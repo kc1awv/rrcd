@@ -93,6 +93,7 @@ Protocol alignment notes (for implementers):
 - `HELLO` and `WELCOME` bodies are CBOR maps with unsigned integer keys.
 - Capabilities are carried in body key `2` as a CBOR map (not a bitmask). Keys
     inside the capabilities map are unsigned integers; values are advisory.
+- Core room content types include `MSG`, `NOTICE`, and `ACTION` (type `22`).
 - `WELCOME` is intentionally minimal (hub name/version/caps only). Any hub
     greeting text is delivered after `WELCOME` via one or more `NOTICE` messages.
 
@@ -121,6 +122,9 @@ policy-level features that are allowed by the spec:
 use a hub-local convention: if a client sends a `MSG`/`NOTICE` whose body is a
 string beginning with `/`, and the command is recognized, the hub treats it as a
 command and does not forward it.
+
+`ACTION` is treated as normal room content and is forwarded unchanged. `rrcd`
+does not interpret `ACTION` bodies as slash commands.
 
 Wire-level extensions (backwards-compatible):
 

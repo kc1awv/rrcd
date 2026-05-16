@@ -23,6 +23,7 @@ T_PARTED = 13
 
 T_MSG = 20
 T_NOTICE = 21
+T_ACTION = 22
 
 T_PING = 30
 T_PONG = 31
@@ -56,6 +57,7 @@ B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE = 4
 
 # Capabilities map keys (values are advisory). Keep these small and numeric.
 CAP_RESOURCE_ENVELOPE = 0
+CAP_ACTION = 1
 
 # RESOURCE_ENVELOPE body keys
 B_RES_ID = 0

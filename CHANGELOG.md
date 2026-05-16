@@ -2,6 +2,12 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.3.0 - 2026-05-16
+
+- Added core message type `ACTION` (`T_ACTION = 22`) routing with room-content semantics
+- Added advisory capability flag `CAP_ACTION` and now include `B_WELCOME_CAPS` in WELCOME payloads
+- ACTION bodies are forwarded as-is and are not interpreted as slash commands by the hub
+
 ## 0.2.2 - 2026-01-09
 
 - **Protocol constants and welcome message limits**: Added new constants for hub

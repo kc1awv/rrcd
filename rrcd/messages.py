@@ -13,9 +13,12 @@ from .constants import (
     B_LIMIT_MAX_ROOM_NAME_BYTES,
     B_LIMIT_MAX_ROOMS_PER_SESSION,
     B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE,
+    B_WELCOME_CAPS,
     B_WELCOME_HUB,
     B_WELCOME_LIMITS,
     B_WELCOME_VER,
+    CAP_ACTION,
+    CAP_RESOURCE_ENVELOPE,
     T_ERROR,
     T_NOTICE,
     T_WELCOME,
@@ -139,9 +142,16 @@ class MessageHelper:
             B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE: self.hub.config.rate_limit_msgs_per_minute,
         }
 
+        caps: dict[int, bool] = {
+            CAP_ACTION: True,
+        }
+        if self.hub.config.enable_resource_transfer:
+            caps[CAP_RESOURCE_ENVELOPE] = True
+
         body_w: dict[int, Any] = {
             B_WELCOME_HUB: self.hub.config.hub_name,
             B_WELCOME_VER: str(__version__),
+            B_WELCOME_CAPS: caps,
             B_WELCOME_LIMITS: limits,
         }
 
