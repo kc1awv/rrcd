@@ -602,7 +602,15 @@ class MessageRouter:
                 if st is not None and not st.get("registered"):
                     self.hub.room_manager._room_state.pop(r, None)
 
-        if remaining_members and self.hub.identity is not None:
+        peer_still_in_room = False
+        if peer_hash:
+            for member_link in remaining_members:
+                other = self.hub.session_manager.sessions.get(member_link)
+                if other and other.get("peer") == peer_hash:
+                    peer_still_in_room = True
+                    break
+
+        if remaining_members and self.hub.identity is not None and not peer_still_in_room:
             notification_body = (
                 [peer_hash] if self.hub.config.include_joined_member_list else None
             )

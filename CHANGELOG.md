@@ -7,6 +7,8 @@ This project follows the versioning policy in VERSIONING.md.
 - Added core message type `ACTION` (`T_ACTION = 22`) routing with room-content semantics
 - Added advisory capability flag `CAP_ACTION` and now include `B_WELCOME_CAPS` in WELCOME payloads
 - ACTION bodies are forwarded as-is and are not interpreted as slash commands by the hub
+- Fixed multi-link identity handling: do not emit room `PARTED` or clear
+    hash-link index state when a peer still remains in the room via another active link (thanks, neutral for the patch!)
 
 ## 0.2.2 - 2026-01-09
 

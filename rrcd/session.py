@@ -119,7 +119,8 @@ class SessionManager:
         rooms_count = len(sess.get("rooms") or ())
 
         if isinstance(peer, (bytes, bytearray)):
-            self._index_by_hash.pop(bytes(peer), None)
+            if self._index_by_hash.get(bytes(peer)) is link:
+                self._index_by_hash.pop(bytes(peer), None)
 
         if nick:
             self.update_nick_index(link, nick, None)
@@ -134,7 +135,15 @@ class SessionManager:
 
             self.hub.room_manager.remove_member(room, link)
 
-            if remaining_members and peer_hash and self.hub.identity:
+            peer_still_in_room = False
+            if peer_hash:
+                for member_link in remaining_members:
+                    other = self.sessions.get(member_link)
+                    if other and other.get("peer") == peer_hash:
+                        peer_still_in_room = True
+                        break
+
+            if remaining_members and peer_hash and self.hub.identity and not peer_still_in_room:
                 notification_body = (
                     [peer_hash] if self.hub.config.include_joined_member_list else None
                 )
