@@ -2,6 +2,23 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.3.1 - 2026-05-17
+
+- Added a backward-compatible direct `NOTICE` extension using envelope key
+  `K_DST = 8` for full destination identity hashes
+- Added advisory `CAP_DIRECT_NOTICE = 2` to `WELCOME` capabilities so clients
+  can detect support before sending direct notices
+- Direct `NOTICE` delivery now returns `ERROR` for mixed room-plus-destination
+  envelopes and for unknown or offline destination identities
+
+## 0.3.0 - 2026-05-16
+
+- Added core message type `ACTION` (`T_ACTION = 22`) routing with room-content semantics
+- Added advisory capability flag `CAP_ACTION` and now include `B_WELCOME_CAPS` in WELCOME payloads
+- ACTION bodies are forwarded as-is and are not interpreted as slash commands by the hub
+- Fixed multi-link identity handling: do not emit room `PARTED` or clear
+    hash-link index state when a peer still remains in the room via another active link (thanks, neutral for the patch!)
+
 ## 0.2.2 - 2026-01-09
 
 - **Protocol constants and welcome message limits**: Added new constants for hub

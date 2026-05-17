@@ -43,6 +43,7 @@ class StatsManager:
             "parts": 0,
             "msgs_forwarded": 0,
             "notices_forwarded": 0,
+            "actions_forwarded": 0,
             "pings_in": 0,
             "pongs_in": 0,
             "pings_out": 0,
@@ -128,11 +129,12 @@ class StatsManager:
             )
         )
         lines.append(
-            "events: joins={} parts={} msgs_fwd={} notices_fwd={} errors_sent={} rate_limited={}".format(
+            "events: joins={} parts={} msgs_fwd={} notices_fwd={} actions_fwd={} errors_sent={} rate_limited={}".format(
                 c.get("joins", 0),
                 c.get("parts", 0),
                 c.get("msgs_forwarded", 0),
                 c.get("notices_forwarded", 0),
+                c.get("actions_forwarded", 0),
                 c.get("errors_sent", 0),
                 c.get("rate_limited", 0),
             )

@@ -3,6 +3,7 @@ import pytest
 from rrcd.constants import (
     B_HELLO_NICK_LEGACY,
     K_BODY,
+    K_DST,
     K_ID,
     K_NICK,
     K_SRC,
@@ -23,6 +24,12 @@ def test_validate_accepts_make_envelope() -> None:
 def test_validate_accepts_optional_nick_extension() -> None:
     env = make_envelope(T_HELLO, src=b"peer", body=None, nick="alice")
     assert env[K_NICK] == "alice"
+    validate_envelope(env)
+
+
+def test_validate_accepts_optional_destination_extension() -> None:
+    env = make_envelope(T_HELLO, src=b"peer", dst=b"target", body=None)
+    assert env[K_DST] == b"target"
     validate_envelope(env)
 
 
@@ -87,5 +94,10 @@ def test_validate_rejects_wrong_field_types() -> None:
 
     env = make_envelope(T_HELLO, src=b"peer", body=None)
     env[K_NICK] = 123
+    with pytest.raises(TypeError):
+        validate_envelope(env)
+
+    env = make_envelope(T_HELLO, src=b"peer", body=None)
+    env[K_DST] = "not-bytes"
     with pytest.raises(TypeError):
         validate_envelope(env)

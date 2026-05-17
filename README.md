@@ -93,6 +93,7 @@ Protocol alignment notes (for implementers):
 - `HELLO` and `WELCOME` bodies are CBOR maps with unsigned integer keys.
 - Capabilities are carried in body key `2` as a CBOR map (not a bitmask). Keys
     inside the capabilities map are unsigned integers; values are advisory.
+- Core room content types include `MSG`, `NOTICE`, and `ACTION` (type `22`).
 - `WELCOME` is intentionally minimal (hub name/version/caps only). Any hub
     greeting text is delivered after `WELCOME` via one or more `NOTICE` messages.
 
@@ -122,6 +123,9 @@ use a hub-local convention: if a client sends a `MSG`/`NOTICE` whose body is a
 string beginning with `/`, and the command is recognized, the hub treats it as a
 command and does not forward it.
 
+`ACTION` is treated as normal room content and is forwarded unchanged. `rrcd`
+does not interpret `ACTION` bodies as slash commands.
+
 Wire-level extensions (backwards-compatible):
 
 - **Optional envelope nickname**: the hub may include an additional envelope key
@@ -140,6 +144,23 @@ Wire-level extensions (backwards-compatible):
     Current hub sanitation policy: store/emit only trimmed nicknames that are
     UTF-8 encodable, contain no newlines/NUL, and are at most `nick_max_chars`
     characters (default: 32).
+
+- **Direct NOTICE destination**: the hub supports client-to-client `NOTICE`
+    delivery using an optional envelope key `K_DST = 8` (bytes), containing the
+    full destination identity hash.
+
+    This extension applies only to `NOTICE`. When `K_DST` is present, the hub
+    delivers the message to exactly one connected client identified by that full
+    hash instead of broadcasting by room membership. The forwarded `NOTICE`
+    preserves `K_DST` so the recipient can distinguish direct delivery from
+    room traffic without out-of-band state.
+
+    Direct `NOTICE` messages must not also include `K_ROOM`. Mixed room and
+    direct-destination semantics are rejected with `ERROR`.
+
+    Support for this extension is advertised in `WELCOME` capabilities via
+    `CAP_DIRECT_NOTICE = 2`. Clients should only send `K_DST`-addressed notices
+    after confirming hub support.
 
 - **Large payload transfer via RNS.Resource**: For messages that exceed the link
     MTU (Maximum Data Unit), `rrcd` can automatically use RNS.Resource for

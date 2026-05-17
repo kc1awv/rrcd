@@ -3,7 +3,18 @@ from __future__ import annotations
 import os
 import time
 
-from .constants import K_BODY, K_ID, K_NICK, K_ROOM, K_SRC, K_T, K_TS, K_V, RRC_VERSION
+from .constants import (
+    K_BODY,
+    K_DST,
+    K_ID,
+    K_NICK,
+    K_ROOM,
+    K_SRC,
+    K_T,
+    K_TS,
+    K_V,
+    RRC_VERSION,
+)
 from .util import normalize_nick
 
 
@@ -19,6 +30,7 @@ def make_envelope(
     msg_type: int,
     *,
     src: bytes,
+    dst: bytes | None = None,
     room: str | None = None,
     body=None,
     nick: str | None = None,
@@ -32,6 +44,8 @@ def make_envelope(
         K_TS: ts or now_ms(),
         K_SRC: src,
     }
+    if dst is not None:
+        env[K_DST] = bytes(dst)
     if room is not None:
         env[K_ROOM] = room
     if body is not None:
@@ -90,3 +104,8 @@ def validate_envelope(env: dict) -> None:
         nick = env[K_NICK]
         if not isinstance(nick, str):
             raise TypeError("nickname must be a string")
+
+    if K_DST in env:
+        dst = env[K_DST]
+        if not isinstance(dst, (bytes, bytearray)):
+            raise TypeError("destination identity must be bytes")
