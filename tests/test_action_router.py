@@ -4,7 +4,19 @@ import threading
 from dataclasses import dataclass
 
 from rrcd.codec import decode
-from rrcd.constants import B_WELCOME_CAPS, CAP_ACTION, CAP_RESOURCE_ENVELOPE, K_BODY, K_T, T_ACTION
+from rrcd.constants import (
+    B_WELCOME_CAPS,
+    CAP_ACTION,
+    CAP_DIRECT_NOTICE,
+    CAP_RESOURCE_ENVELOPE,
+    K_BODY,
+    K_DST,
+    K_NICK,
+    K_SRC,
+    K_T,
+    T_ACTION,
+    T_NOTICE,
+)
 from rrcd.envelope import make_envelope
 from rrcd.messages import MessageHelper
 from rrcd.router import MessageRouter
@@ -49,13 +61,26 @@ class _FakeRoomManager:
 
 
 class _FakeSessionManager:
-    def update_nick_index(self, link: object, old_nick: str | None, new_nick: str | None) -> None:
+    def __init__(self) -> None:
+        self.targets: dict[bytes, object] = {}
+
+    def update_nick_index(
+        self, link: object, old_nick: str | None, new_nick: str | None
+    ) -> None:
         return
+
+    def get_link_by_hash(self, peer_hash: bytes) -> object | None:
+        return self.targets.get(bytes(peer_hash))
 
 
 class _FakeMessageHelper:
-    def emit_error(self, outgoing, link, *, src: bytes, text: str, room: str | None = None) -> None:
-        raise AssertionError(f"unexpected error emitted: {text}")
+    def __init__(self) -> None:
+        self.errors: list[tuple[object, str, str | None]] = []
+
+    def emit_error(
+        self, outgoing, link, *, src: bytes, text: str, room: str | None = None
+    ) -> None:
+        self.errors.append((link, text, room))
 
     def queue_payload(self, outgoing, link, payload: bytes) -> None:
         outgoing.append((link, payload))
@@ -82,7 +107,7 @@ class _FakeLink:
 
 
 class _FakeHub:
-    def __init__(self, link: object) -> None:
+    def __init__(self, link: object, members: list[object] | None = None) -> None:
         import logging
 
         self.log = logging.getLogger("test")
@@ -90,7 +115,7 @@ class _FakeHub:
         self.config = _FakeConfig()
         self.stats_manager = _FakeStats()
         self.command_handler = _FakeCommandHandler()
-        self.room_manager = _FakeRoomManager([link])
+        self.room_manager = _FakeRoomManager(members if members is not None else [link])
         self.session_manager = _FakeSessionManager()
         self.message_helper = _FakeMessageHelper()
         self._state_lock = threading.RLock()
@@ -117,6 +142,7 @@ def test_action_is_forwarded_without_command_interpretation() -> None:
     router._handle_message(link, sess, b"peer", env, outgoing)
 
     assert hub.command_handler.called is False
+    assert hub.message_helper.errors == []
     assert hub.stats_manager.counters.get("actions_forwarded") == 1
     assert len(outgoing) == 1
 
@@ -152,4 +178,72 @@ def test_welcome_advertises_action_capability() -> None:
     decoded = decode(outgoing[0][1])
     caps = decoded[K_BODY][B_WELCOME_CAPS]
     assert caps[CAP_ACTION] is True
+    assert caps[CAP_DIRECT_NOTICE] is True
     assert caps[CAP_RESOURCE_ENVELOPE] is True
+
+
+def test_notice_is_forwarded_to_direct_destination() -> None:
+    sender_link = _FakeLink()
+    target_link = object()
+    hub = _FakeHub(sender_link)
+    hub.session_manager.targets[b"target"] = target_link
+    router = MessageRouter(hub)
+
+    sess = {"rooms": set(), "nick": "alice"}
+    env = make_envelope(T_NOTICE, src=b"spoofed", dst=b"target", body="hello")
+    outgoing: list[tuple[object, bytes]] = []
+
+    router._handle_message(sender_link, sess, b"peer", env, outgoing)
+
+    assert hub.message_helper.errors == []
+    assert hub.stats_manager.counters.get("notices_forwarded") == 1
+    assert len(outgoing) == 1
+    assert outgoing[0][0] is target_link
+
+    decoded = decode(outgoing[0][1])
+    assert decoded[K_T] == T_NOTICE
+    assert decoded[K_SRC] == b"peer"
+    assert decoded[K_DST] == b"target"
+    assert decoded[K_NICK] == "alice"
+    assert decoded[K_BODY] == "hello"
+
+
+def test_direct_notice_rejects_room_and_destination_combination() -> None:
+    sender_link = _FakeLink()
+    hub = _FakeHub(sender_link)
+    hub.session_manager.targets[b"target"] = object()
+    router = MessageRouter(hub)
+
+    sess = {"rooms": {"#general"}, "nick": "alice"}
+    env = make_envelope(
+        T_NOTICE,
+        src=b"peer",
+        dst=b"target",
+        room="#general",
+        body="hello",
+    )
+    outgoing: list[tuple[object, bytes]] = []
+
+    router._handle_message(sender_link, sess, b"peer", env, outgoing)
+
+    assert outgoing == []
+    assert hub.message_helper.errors == [
+        (sender_link, "direct notice must not include room", None)
+    ]
+
+
+def test_direct_notice_rejects_unknown_destination() -> None:
+    sender_link = _FakeLink()
+    hub = _FakeHub(sender_link)
+    router = MessageRouter(hub)
+
+    sess = {"rooms": set(), "nick": "alice"}
+    env = make_envelope(T_NOTICE, src=b"peer", dst=b"missing", body="hello")
+    outgoing: list[tuple[object, bytes]] = []
+
+    router._handle_message(sender_link, sess, b"peer", env, outgoing)
+
+    assert outgoing == []
+    assert hub.message_helper.errors == [
+        (sender_link, "destination not connected", None)
+    ]

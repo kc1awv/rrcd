@@ -143,7 +143,12 @@ class SessionManager:
                         peer_still_in_room = True
                         break
 
-            if remaining_members and peer_hash and self.hub.identity and not peer_still_in_room:
+            if (
+                remaining_members
+                and peer_hash
+                and self.hub.identity
+                and not peer_still_in_room
+            ):
                 notification_body = (
                     [peer_hash] if self.hub.config.include_joined_member_list else None
                 )

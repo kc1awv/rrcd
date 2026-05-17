@@ -2,6 +2,15 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.3.1 - 2026-05-17
+
+- Added a backward-compatible direct `NOTICE` extension using envelope key
+  `K_DST = 8` for full destination identity hashes
+- Added advisory `CAP_DIRECT_NOTICE = 2` to `WELCOME` capabilities so clients
+  can detect support before sending direct notices
+- Direct `NOTICE` delivery now returns `ERROR` for mixed room-plus-destination
+  envelopes and for unknown or offline destination identities
+
 ## 0.3.0 - 2026-05-16
 
 - Added core message type `ACTION` (`T_ACTION = 22`) routing with room-content semantics

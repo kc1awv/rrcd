@@ -18,6 +18,7 @@ from .constants import (
     B_WELCOME_LIMITS,
     B_WELCOME_VER,
     CAP_ACTION,
+    CAP_DIRECT_NOTICE,
     CAP_RESOURCE_ENVELOPE,
     T_ERROR,
     T_NOTICE,
@@ -144,6 +145,7 @@ class MessageHelper:
 
         caps: dict[int, bool] = {
             CAP_ACTION: True,
+            CAP_DIRECT_NOTICE: True,
         }
         if self.hub.config.enable_resource_transfer:
             caps[CAP_RESOURCE_ENVELOPE] = True

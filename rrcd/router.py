@@ -15,6 +15,7 @@ from .constants import (
     B_RES_SHA256,
     B_RES_SIZE,
     K_BODY,
+    K_DST,
     K_NICK,
     K_ROOM,
     K_SRC,
@@ -610,7 +611,11 @@ class MessageRouter:
                     peer_still_in_room = True
                     break
 
-        if remaining_members and self.hub.identity is not None and not peer_still_in_room:
+        if (
+            remaining_members
+            and self.hub.identity is not None
+            and not peer_still_in_room
+        ):
             notification_body = (
                 [peer_hash] if self.hub.config.include_joined_member_list else None
             )
@@ -652,6 +657,7 @@ class MessageRouter:
         """Handle MSG, NOTICE, and ACTION messages."""
         t = env.get(K_T)
         room = env.get(K_ROOM)
+        dst = env.get(K_DST)
         body = env.get(K_BODY)
 
         if t in (T_MSG, T_NOTICE) and isinstance(body, str):
@@ -716,6 +722,9 @@ class MessageRouter:
                     )
                     return
         elif t == T_NOTICE:
+            if dst is not None:
+                self._handle_direct_notice(link, sess, peer_hash, env, outgoing)
+                return
             if not isinstance(room, str) or not room:
                 return
 
@@ -828,6 +837,87 @@ class MessageRouter:
             self.hub.stats_manager.inc("actions_forwarded")
         else:
             self.hub.stats_manager.inc("notices_forwarded")
+
+    def _handle_direct_notice(
+        self,
+        link: RNS.Link,
+        sess: dict[str, Any],
+        peer_hash: bytes,
+        env: dict,
+        outgoing: list[tuple[RNS.Link, bytes]],
+    ) -> None:
+        """Handle client-to-client NOTICE delivery by destination identity."""
+        if self.hub.identity is None:
+            return
+
+        dst = env.get(K_DST)
+        room = env.get(K_ROOM)
+
+        if room is not None:
+            self.hub.message_helper.emit_error(
+                outgoing,
+                link,
+                src=self.hub.identity.hash,
+                text="direct notice must not include room",
+            )
+            return
+
+        if not isinstance(dst, (bytes, bytearray)):
+            self.hub.message_helper.emit_error(
+                outgoing,
+                link,
+                src=self.hub.identity.hash,
+                text="direct notice requires destination identity",
+            )
+            return
+
+        target_link = self.hub.session_manager.get_link_by_hash(bytes(dst))
+        if target_link is None:
+            self.hub.message_helper.emit_error(
+                outgoing,
+                link,
+                src=self.hub.identity.hash,
+                text="destination not connected",
+            )
+            return
+
+        env[K_SRC] = (
+            bytes(peer_hash) if isinstance(peer_hash, (bytes, bytearray)) else peer_hash
+        )
+
+        incoming_nick = env.get(K_NICK)
+        if incoming_nick is not None:
+            n = normalize_nick(incoming_nick, max_bytes=self.hub.config.max_nick_bytes)
+            if n is not None:
+                old_session_nick = sess.get("nick")
+                if old_session_nick != n:
+                    sess["nick"] = n
+                    self.hub.session_manager.update_nick_index(
+                        link, old_session_nick, n
+                    )
+                env[K_NICK] = n
+            else:
+                env.pop(K_NICK, None)
+        else:
+            nick = sess.get("nick")
+            n = normalize_nick(nick, max_bytes=self.hub.config.max_nick_bytes)
+            if n is not None:
+                env[K_NICK] = n
+
+        env[K_DST] = bytes(dst)
+        payload = encode(env)
+        self.hub.message_helper.queue_payload(outgoing, target_link, payload)
+
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug(
+                "Forwarded direct NOTICE peer=%s nick=%r dst=%s body_type=%s",
+                self.hub._fmt_hash(peer_hash),
+                sess.get("nick"),
+                bytes(dst).hex(),
+                type(env.get(K_BODY)).__name__,
+            )
+
+        self.hub.stats_manager.inc("notices_forwarded")
 
     def _handle_ping(
         self,

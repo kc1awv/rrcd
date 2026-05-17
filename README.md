@@ -145,6 +145,23 @@ Wire-level extensions (backwards-compatible):
     UTF-8 encodable, contain no newlines/NUL, and are at most `nick_max_chars`
     characters (default: 32).
 
+- **Direct NOTICE destination**: the hub supports client-to-client `NOTICE`
+    delivery using an optional envelope key `K_DST = 8` (bytes), containing the
+    full destination identity hash.
+
+    This extension applies only to `NOTICE`. When `K_DST` is present, the hub
+    delivers the message to exactly one connected client identified by that full
+    hash instead of broadcasting by room membership. The forwarded `NOTICE`
+    preserves `K_DST` so the recipient can distinguish direct delivery from
+    room traffic without out-of-band state.
+
+    Direct `NOTICE` messages must not also include `K_ROOM`. Mixed room and
+    direct-destination semantics are rejected with `ERROR`.
+
+    Support for this extension is advertised in `WELCOME` capabilities via
+    `CAP_DIRECT_NOTICE = 2`. Clients should only send `K_DST`-addressed notices
+    after confirming hub support.
+
 - **Large payload transfer via RNS.Resource**: For messages that exceed the link
     MTU (Maximum Data Unit), `rrcd` can automatically use RNS.Resource for
     reliable large payload transfer instead of manual chunking.

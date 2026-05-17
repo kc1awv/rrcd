@@ -52,6 +52,50 @@ syntax to generate `ACTION` envelopes, and clients are free to render incoming
 `rrcd` does not parse slash commands from `ACTION` bodies. Slash-command
 handling remains a `MSG`/`NOTICE` convention.
 
+## Extension: Direct NOTICE Delivery
+
+**Envelope Key**: `8` (`K_DST`)
+**Capability Key**: `2` (`CAP_DIRECT_NOTICE`)
+**Status**: Implemented (advisory)
+
+`rrcd` advertises `CAP_DIRECT_NOTICE` in `WELCOME` capabilities to indicate
+that the hub supports client-to-client `NOTICE` delivery using an explicit
+destination identity hash.
+
+When a client sends a `NOTICE` with `K_DST = 8`, the value must be the full
+destination identity hash as bytes. The hub resolves that identity against the
+currently connected sessions and forwards the `NOTICE` to exactly one link.
+
+Direct `NOTICE` delivery does not use room membership. `K_ROOM` must be omitted
+when `K_DST` is present; if both are present, the hub rejects the message with
+`ERROR` rather than guessing which delivery mode the sender intended.
+
+**Envelope structure**:
+
+```python
+{
+        0: 1,                 # protocol version (K_V)
+        1: 21,                # message type T_NOTICE (K_T)
+        2: <8-byte-id>,       # message ID (K_ID)
+        3: <timestamp>,       # millisecond timestamp (K_TS)
+        4: <sender-hash>,     # sender identity hash (K_SRC)
+        6: <body>,            # notice body (K_BODY)
+        8: <dest-hash>        # full destination identity hash (K_DST)
+}
+```
+
+**Delivery semantics**:
+
+- The hub overwrites `K_SRC` with the authenticated sender identity for the
+    current link.
+- The hub preserves `K_DST` on the forwarded envelope so the recipient can tell
+    that the `NOTICE` was direct-addressed to its identity.
+- The hub may normalize or attach `K_NICK` as a display hint, just as it does
+    for room `MSG`/`NOTICE` forwarding.
+- If the destination is not currently connected, the sender receives `ERROR`.
+- Nicknames and hash prefixes are not accepted in `K_DST`; this field is full
+    identity bytes only.
+
 The RRC specification has no concept of large message delivery beyond "chunk it
 yourself, good luck." This is fine for small messages but becomes obnoxious for:
 
@@ -507,9 +551,11 @@ If you're implementing a client or another hub, here's what you need to know:
 ### Enhanced Compatibility (Recommended)
 - Support `T_RESOURCE_ENVELOPE` (message type 50) and Reticulum resources
 - Handle `ACTION` (message type 22) as room content (rendering is client-defined)
+- Handle `K_DST` (envelope key 8) on incoming `NOTICE` if you want direct-message UX
 - Advertise `CAP_ACTION` in your `HELLO` capabilities if you support ACTION UX
 - Advertise `CAP_RESOURCE_ENVELOPE` in your `HELLO` capabilities if you support
    resources
+- Wait for `CAP_DIRECT_NOTICE` in `WELCOME` before sending direct `NOTICE` with `K_DST`
 - Expect hub greeting to arrive via `NOTICE` messages after `WELCOME`
 - Handle chunked `NOTICE` messages (multiple messages with the same content
    type)

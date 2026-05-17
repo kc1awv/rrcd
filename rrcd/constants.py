@@ -11,6 +11,7 @@ K_SRC = 4
 K_ROOM = 5
 K_BODY = 6
 K_NICK = 7
+K_DST = 8
 
 # Message types
 T_HELLO = 1
@@ -58,6 +59,7 @@ B_LIMIT_RATE_LIMIT_MSGS_PER_MINUTE = 4
 # Capabilities map keys (values are advisory). Keep these small and numeric.
 CAP_RESOURCE_ENVELOPE = 0
 CAP_ACTION = 1
+CAP_DIRECT_NOTICE = 2
 
 # RESOURCE_ENVELOPE body keys
 B_RES_ID = 0
