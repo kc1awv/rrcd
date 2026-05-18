@@ -5,6 +5,7 @@ import os
 import signal
 import threading
 import time
+from dataclasses import replace
 from typing import Any
 
 import RNS
@@ -13,6 +14,7 @@ from .codec import encode
 from .commands import CommandHandler
 from .config import ConfigManager, HubRuntimeConfig
 from .constants import (
+    HUB_DEST_NAME,
     T_PING,
 )
 from .envelope import make_envelope
@@ -29,7 +31,11 @@ from .util import expand_path
 
 class HubService:
     def __init__(self, config: HubRuntimeConfig) -> None:
-        self.config = config
+        self.config = (
+            replace(config, dest_name=HUB_DEST_NAME)
+            if config.dest_name != HUB_DEST_NAME
+            else config
+        )
         self.log = logging.getLogger("rrcd.hub")
         self._state_lock = threading.RLock()
         self._shutdown = threading.Event()
@@ -66,9 +72,9 @@ class HubService:
 
         self._load_registered_rooms_from_registry()
 
-        parts = [p for p in str(self.config.dest_name).split(".") if p]
+        parts = [p for p in HUB_DEST_NAME.split(".") if p]
         if not parts:
-            raise ValueError("dest_name must not be empty")
+            raise ValueError("HUB_DEST_NAME must not be empty")
         app_name, aspects = parts[0], parts[1:]
 
         self.destination = RNS.Destination(
@@ -92,8 +98,7 @@ class HubService:
             self._announce_thread.start()
 
         self.log.info(
-            "Hub running dest_name=%s dest_hash=%s",
-            self.config.dest_name,
+            "Hub running at dest_hash=%s",
             self.destination.hash.hex() if self.destination else "-",
         )
         self.log.info(

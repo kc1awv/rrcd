@@ -37,8 +37,11 @@ a default identity at `~/.rrcd/hub_identity`, plus a room registry at
 To override the default state directory (`~/.rrcd/`), set `RRCD_HOME`, e.g.
 `RRCD_HOME=/tmp/rrcd rrcd`.
   
-To specify a custom identity and destination name:
-- `rrcd --identity ~/.rrcd/hub_identity --dest-name rrc.hub`
+To specify a custom identity path:
+- `rrcd --identity ~/.rrcd/hub_identity`
+
+The hub destination namespace is fixed at `rrc.hub` so clients can discover
+hubs consistently.
 
 Optional:
 

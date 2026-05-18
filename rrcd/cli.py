@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
 import RNS
 
 from .config import HubRuntimeConfig
+from .constants import HUB_DEST_NAME
 from .logging_config import configure_logging
 from .paths import (
     default_config_path,
@@ -17,62 +18,6 @@ from .paths import (
     ensure_private_dir,
 )
 from .service import HubService
-
-
-def _load_toml(path: str) -> dict:
-    import tomllib
-
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
-def _apply_config_file(cfg: HubRuntimeConfig, path: str) -> HubRuntimeConfig:
-    data = _load_toml(path)
-
-    hub = data.get("hub") if isinstance(data, dict) else None
-    if isinstance(hub, dict):
-        data = {**data, **hub}
-
-    log_table = data.get("logging") if isinstance(data, dict) else None
-    if isinstance(log_table, dict):
-        mapped: dict[str, object] = {}
-        if "level" in log_table:
-            mapped["log_level"] = log_table.get("level")
-        if "rns_level" in log_table:
-            mapped["log_rns_level"] = log_table.get("rns_level")
-        if "console" in log_table:
-            mapped["log_console"] = log_table.get("console")
-        if "file" in log_table:
-            mapped["log_file"] = log_table.get("file")
-        if "format" in log_table:
-            mapped["log_format"] = log_table.get("format")
-        if "datefmt" in log_table:
-            mapped["log_datefmt"] = log_table.get("datefmt")
-        data = {**data, **mapped}
-
-    allowed = set(asdict(cfg).keys())
-    # This identifies where to reload/persist from; do not let the file override it.
-    allowed.discard("config_path")
-    updates = {k: v for k, v in data.items() if k in allowed}
-
-    for list_key in ("trusted_identities", "banned_identities"):
-        if list_key in updates and isinstance(updates[list_key], list):
-            updates[list_key] = tuple(str(x) for x in updates[list_key])
-
-    if "announce" in data and "announce_on_start" not in updates:
-        try:
-            updates["announce_on_start"] = bool(data["announce"])
-        except Exception:
-            pass
-    if "configdir" in updates and updates["configdir"] == "":
-        updates["configdir"] = None
-    if "greeting" in updates and updates["greeting"] == "":
-        updates["greeting"] = None
-    if "log_file" in updates and updates["log_file"] == "":
-        updates["log_file"] = None
-    if "log_datefmt" in updates and updates["log_datefmt"] == "":
-        updates["log_datefmt"] = None
-    return replace(cfg, **updates) if updates else cfg
 
 
 def _write_default_config(config_path: str, identity_path: str) -> None:
@@ -105,8 +50,8 @@ identity_path = {identity_path!r}
 # A running hub can reload both rrcd.toml and rooms.toml with the /reload command.
 room_registry_path = {room_registry_path!r}
 
-# Destination name to host the hub on.
-dest_name = "rrc.hub"
+# The hub destination namespace is fixed for client discovery.
+# Hubs always announce on {HUB_DEST_NAME!r}.
 
 # Announcing (Reticulum destination announces)
 #
@@ -298,10 +243,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Path to separate room registry TOML (created on first run)",
     )
     p.add_argument(
-        "--dest-name", default=None, help="Destination app name (default: rrc.hub)"
-    )
-
-    p.add_argument(
         "--no-announce",
         action="store_true",
         help="Disable announce on start (does not affect periodic announce)",
@@ -413,9 +354,6 @@ def main(argv: list[str] | None = None) -> None:
         temp_mgr = ConfigManager(temp_hub)  # type: ignore
         data = temp_mgr.load_toml(config_path)
         cfg = temp_mgr.apply_config_data(cfg, data)
-
-    if args.dest_name is not None:
-        cfg = replace(cfg, dest_name=args.dest_name)
 
     if args.no_announce:
         cfg = replace(cfg, announce_on_start=False)

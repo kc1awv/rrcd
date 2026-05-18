@@ -11,6 +11,8 @@ This project follows the versioning policy in VERSIONING.md.
   the existing-member fanout notifications
 - Added focused test coverage for JOINED/PARTED fanout nick hints, including
   disconnect-driven `PARTED` notifications
+- Hardened hub discovery by fixing the advertised destination namespace to
+  `rrc.hub` and removing config or CLI overrides for that value
 
 ## 0.3.1 - 2026-05-17
 

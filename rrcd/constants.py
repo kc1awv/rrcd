@@ -1,6 +1,7 @@
 # RRC protocol constants (numeric keys and message types)
 
 RRC_VERSION = 1
+HUB_DEST_NAME = "rrc.hub"
 
 # Envelope keys
 K_V = 0

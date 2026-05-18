@@ -4,6 +4,8 @@ import threading
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from .constants import HUB_DEST_NAME
+
 if TYPE_CHECKING:
     from .service import HubService
 
@@ -14,7 +16,7 @@ class HubRuntimeConfig:
     room_registry_path: str | None = None
     configdir: str | None = None
     identity_path: str | None = None
-    dest_name: str = "rrc.hub"
+    dest_name: str = HUB_DEST_NAME
     announce_on_start: bool = True
     announce_period_s: float = 0.0
     hub_name: str = "rrc"
@@ -94,6 +96,7 @@ class ConfigManager:
 
         allowed = set(asdict(base).keys())
         allowed.discard("config_path")
+        allowed.discard("dest_name")
 
         updates = {k: v for k, v in data.items() if k in allowed}
 
