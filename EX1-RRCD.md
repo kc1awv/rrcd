@@ -52,50 +52,6 @@ syntax to generate `ACTION` envelopes, and clients are free to render incoming
 `rrcd` does not parse slash commands from `ACTION` bodies. Slash-command
 handling remains a `MSG`/`NOTICE` convention.
 
-## Extension: Direct NOTICE Delivery
-
-**Envelope Key**: `8` (`K_DST`)
-**Capability Key**: `2` (`CAP_DIRECT_NOTICE`)
-**Status**: Implemented (advisory)
-
-`rrcd` advertises `CAP_DIRECT_NOTICE` in `WELCOME` capabilities to indicate
-that the hub supports client-to-client `NOTICE` delivery using an explicit
-destination identity hash.
-
-When a client sends a `NOTICE` with `K_DST = 8`, the value must be the full
-destination identity hash as bytes. The hub resolves that identity against the
-currently connected sessions and forwards the `NOTICE` to exactly one link.
-
-Direct `NOTICE` delivery does not use room membership. `K_ROOM` must be omitted
-when `K_DST` is present; if both are present, the hub rejects the message with
-`ERROR` rather than guessing which delivery mode the sender intended.
-
-**Envelope structure**:
-
-```python
-{
-        0: 1,                 # protocol version (K_V)
-        1: 21,                # message type T_NOTICE (K_T)
-        2: <8-byte-id>,       # message ID (K_ID)
-        3: <timestamp>,       # millisecond timestamp (K_TS)
-        4: <sender-hash>,     # sender identity hash (K_SRC)
-        6: <body>,            # notice body (K_BODY)
-        8: <dest-hash>        # full destination identity hash (K_DST)
-}
-```
-
-**Delivery semantics**:
-
-- The hub overwrites `K_SRC` with the authenticated sender identity for the
-    current link.
-- The hub preserves `K_DST` on the forwarded envelope so the recipient can tell
-    that the `NOTICE` was direct-addressed to its identity.
-- The hub may normalize or attach `K_NICK` as a display hint, just as it does
-    for room `MSG`/`NOTICE` forwarding.
-- If the destination is not currently connected, the sender receives `ERROR`.
-- Nicknames and hash prefixes are not accepted in `K_DST`; this field is full
-    identity bytes only.
-
 The RRC specification has no concept of large message delivery beyond "chunk it
 yourself, good luck." This is fine for small messages but becomes obnoxious for:
 
@@ -161,6 +117,50 @@ want to receive verbose MOTDs, you'll need to support this.)
 **Encoding**: For text-based kinds (`notice`, `motd`), the `B_RES_ENCODING`
 field should specify the text encoding (default: `"utf-8"`). For `blob`,
 encoding is irrelevant.
+
+## Extension: Direct NOTICE Delivery
+
+**Envelope Key**: `8` (`K_DST`)
+**Capability Key**: `2` (`CAP_DIRECT_NOTICE`)
+**Status**: Implemented (advisory)
+
+`rrcd` advertises `CAP_DIRECT_NOTICE` in `WELCOME` capabilities to indicate
+that the hub supports client-to-client `NOTICE` delivery using an explicit
+destination identity hash.
+
+When a client sends a `NOTICE` with `K_DST = 8`, the value must be the full
+destination identity hash as bytes. The hub resolves that identity against the
+currently connected sessions and forwards the `NOTICE` to exactly one link.
+
+Direct `NOTICE` delivery does not use room membership. `K_ROOM` must be omitted
+when `K_DST` is present; if both are present, the hub rejects the message with
+`ERROR` rather than guessing which delivery mode the sender intended.
+
+**Envelope structure**:
+
+```python
+{
+        0: 1,                 # protocol version (K_V)
+        1: 21,                # message type T_NOTICE (K_T)
+        2: <8-byte-id>,       # message ID (K_ID)
+        3: <timestamp>,       # millisecond timestamp (K_TS)
+        4: <sender-hash>,     # sender identity hash (K_SRC)
+        6: <body>,            # notice body (K_BODY)
+        8: <dest-hash>        # full destination identity hash (K_DST)
+}
+```
+
+**Delivery semantics**:
+
+- The hub overwrites `K_SRC` with the authenticated sender identity for the
+    current link.
+- The hub preserves `K_DST` on the forwarded envelope so the recipient can tell
+    that the `NOTICE` was direct-addressed to its identity.
+- The hub may normalize or attach `K_NICK` as a display hint, just as it does
+    for room `MSG`/`NOTICE` forwarding.
+- If the destination is not currently connected, the sender receives `ERROR`.
+- Nicknames and hash prefixes are not accepted in `K_DST`; this field is full
+    identity bytes only.
 
 ### Configuration
 
@@ -375,7 +375,8 @@ When a user joins a room:
 
 2. **Existing room members receive**: A `JOINED` message containing **only** the
    identity hash of the user who just joined. This allows room members to update
-   their member lists.
+    their member lists. The hub may also attach advisory `K_NICK` (`7`) with the
+    joining user's current nickname.
    
    ```python
    {
@@ -385,6 +386,7 @@ When a user joins a room:
        3: <timestamp>,
        4: <hub-identity-hash>,
        5: <room-name>,
+       7: <joining-user-nick>, # optional advisory nickname
        6: [<new-user-hash>]     # body: single-element list
    }
    ```
@@ -393,7 +395,9 @@ When a user joins a room:
 
 When a user leaves a room, all users (including the departing user) receive a
 `PARTED` message containing **only** the departing user's identity hash (if
-`include_joined_member_list` is enabled).
+`include_joined_member_list` is enabled). For notifications sent to remaining
+room members, the hub may also attach advisory `K_NICK` (`7`) with the
+departing user's current nickname.
 
 ```python
 {
@@ -403,6 +407,7 @@ When a user leaves a room, all users (including the departing user) receive a
     3: <timestamp>,
     4: <hub-identity-hash>,
     5: <room-name>,
+    7: <departed-user-nick>, # optional advisory nickname for remaining members
     6: [<departed-user-hash>] # body: single-element list
 }
 ```
@@ -420,6 +425,9 @@ When disabled, all `JOINED` and `PARTED` messages have `null` or empty bodies.
 - **JOINED bodies** may contain either a full member list (multiple hashes) or a
   single hash. Clients should handle both cases.
 - **PARTED bodies** always contain a single hash (the departing user's identity).
+- Existing-member `JOINED` and `PARTED` notifications may include advisory
+    `K_NICK` for the joining or parting user. The actor-facing `JOINED`/`PARTED`
+    messages do not rely on `K_NICK`.
 - The message source (`K_SRC`) is always the hub's identity hash, not the
   joining/parting user.
 - This extension allows clients to maintain accurate room member lists without

@@ -504,7 +504,11 @@ class MessageRouter:
                 [peer_hash] if self.hub.config.include_joined_member_list else None
             )
             member_notification = make_envelope(
-                T_JOINED, src=self.hub.identity.hash, room=r, body=notification_body
+                T_JOINED,
+                src=self.hub.identity.hash,
+                room=r,
+                body=notification_body,
+                nick=sess.get("nick"),
             )
             member_notification_payload = encode(member_notification)
             for member_link in existing_members:
@@ -620,7 +624,11 @@ class MessageRouter:
                 [peer_hash] if self.hub.config.include_joined_member_list else None
             )
             member_notification = make_envelope(
-                T_PARTED, src=self.hub.identity.hash, room=r, body=notification_body
+                T_PARTED,
+                src=self.hub.identity.hash,
+                room=r,
+                body=notification_body,
+                nick=sess.get("nick"),
             )
             member_notification_payload = encode(member_notification)
             for member_link in remaining_members:

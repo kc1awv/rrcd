@@ -157,6 +157,7 @@ class SessionManager:
                     src=self.hub.identity.hash,
                     room=room,
                     body=notification_body,
+                    nick=nick,
                 )
                 member_notification_payload = encode(member_notification)
                 for member_link in remaining_members:

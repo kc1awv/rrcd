@@ -2,6 +2,16 @@
 
 This project follows the versioning policy in VERSIONING.md.
 
+## 0.3.2 - 2026-05-18
+
+- Added advisory `K_NICK = 7` to `JOINED` and `PARTED` notifications fanned out
+  to existing room members so clients can show the joining or parting user's
+  nickname without changing the message body format
+- Kept actor-facing `JOINED` and `PARTED` replies unchanged while extending only
+  the existing-member fanout notifications
+- Added focused test coverage for JOINED/PARTED fanout nick hints, including
+  disconnect-driven `PARTED` notifications
+
 ## 0.3.1 - 2026-05-17
 
 - Added a backward-compatible direct `NOTICE` extension using envelope key
